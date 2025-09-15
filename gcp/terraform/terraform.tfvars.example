@@ -1,0 +1,7 @@
+# GCP Project Configuration
+project_id = "your-gcp-project-id"  # Replace with your actual project ID
+region     = "us-central1"           # Or your preferred region
+
+# Security Configuration
+neo4j_password   = "secure-neo4j-password-123"      # Strong password for Neo4j
+jwt_secret_key   = "your-super-secret-jwt-key-456"  # Strong secret for JWT tokens
