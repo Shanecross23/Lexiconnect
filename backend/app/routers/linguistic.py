@@ -65,20 +65,17 @@ async def _store_interlinear_text(text: InterlinearTextCreate, db) -> str:
     """Store an interlinear text and all its components in the graph database"""
 
     # Create the text node
-    text_id = str(uuid.uuid4())
     db.run(
         """
-        CREATE (t:Text {
-            id: $id,
-            guid: $guid,
-            title: $title,
-            source: $source,
-            comment: $comment,
-            language_code: $language_code,
-            created_at: datetime()
-        })
-    """,
-        id=text_id,
+        MERGE (t:Text {guid: $guid})
+          ON CREATE SET t.id = randomUUID(),
+                        t.created_at = datetime()
+        SET t.title = $title,
+            t.source = $source,
+            t.comment = $comment,
+            t.language_code = $language_code,
+            t.updated_at = datetime()
+        """,
         guid=text.guid,
         title=text.title,
         source=text.source,
@@ -88,76 +85,65 @@ async def _store_interlinear_text(text: InterlinearTextCreate, db) -> str:
 
     # Store paragraphs and their components
     for paragraph in text.paragraphs:
-        paragraph_id = str(uuid.uuid4())
         db.run(
             """
-            MATCH (t:Text {id: $text_id})
-            CREATE (p:Paragraph {
-                id: $id,
-                guid: $guid,
-                order: $order,
-                created_at: datetime()
-            })
-            CREATE (t)-[:CONTAINS]->(p)
-        """,
-            text_id=text_id,
-            id=paragraph_id,
+            MATCH (t:Text {guid: $text_guid})
+            MERGE (p:Paragraph {guid: $guid})
+              ON CREATE SET p.id = randomUUID(),
+                            p.created_at = datetime()
+            SET p.order = $order,
+                p.updated_at = datetime()
+            MERGE (t)-[:CONTAINS]->(p)
+            """,
+            text_guid=text.guid,
             guid=paragraph.guid,
             order=paragraph.order,
         )
 
         # Store phrases and their components
         for phrase in paragraph.phrases:
-            phrase_id = str(uuid.uuid4())
             db.run(
                 """
-                MATCH (p:Paragraph {id: $paragraph_id})
-                CREATE (ph:Phrase {
-                    id: $id,
-                    guid: $guid,
-                    segnum: $segnum,
-                    surface_text: $surface_text,
-                    language: $language,
-                    created_at: datetime()
-                })
-                CREATE (p)-[:CONTAINS]->(ph)
-            """,
-                paragraph_id=paragraph_id,
-                id=phrase_id,
+                MATCH (p:Paragraph {guid: $para_guid})
+                MERGE (ph:Phrase {guid: $guid})
+                  ON CREATE SET ph.id = randomUUID(),
+                                ph.created_at = datetime()
+                SET ph.segnum = $segnum,
+                    ph.surface_text = $surface_text,
+                    ph.language = $language,
+                    ph.updated_at = datetime()
+                MERGE (p)-[:CONTAINS]->(ph)
+                """,
+                para_guid=paragraph.guid,
                 guid=phrase.guid,
                 segnum=phrase.segnum,
                 surface_text=phrase.surface_text,
                 language=phrase.language,
             )
 
-            # Store words and morphemes
             for word in phrase.words:
-                word_id = await _store_word(word, phrase_id, db)
+                await _store_word(word, phrase.guid, db)
 
-    return text_id
+    return text.guid
 
 
-async def _store_word(word: WordCreate, phrase_id: str, db) -> str:
+async def _store_word(word: WordCreate, phrase_guid: str, db) -> str:
     """Store a word and its morphemes"""
-    word_id = str(uuid.uuid4())
-
     # Create word node
     db.run(
         """
-        MATCH (ph:Phrase {id: $phrase_id})
-        CREATE (w:Word {
-            id: $id,
-            guid: $guid,
-            surface_form: $surface_form,
-            gloss: $gloss,
-            pos: $pos,
-            language: $language,
-            created_at: datetime()
-        })
-        CREATE (ph)-[:CONTAINS]->(w)
-    """,
-        phrase_id=phrase_id,
-        id=word_id,
+        MATCH (ph:Phrase {guid: $phrase_guid})
+        MERGE (w:Word {guid: $guid})
+          ON CREATE SET w.id = randomUUID(),
+                        w.created_at = datetime()
+        SET w.surface_form = $surface_form,
+            w.gloss = $gloss,
+            w.pos = $pos,
+            w.language = $language,
+            w.updated_at = datetime()
+        MERGE (ph)-[:CONTAINS]->(w)
+        """,
+        phrase_guid=phrase_guid,
         guid=word.guid,
         surface_form=word.surface_form,
         gloss=word.gloss,
@@ -167,130 +153,69 @@ async def _store_word(word: WordCreate, phrase_id: str, db) -> str:
 
     # Store morphemes
     for morpheme in word.morphemes:
-        morpheme_id = await _store_morpheme(morpheme, word_id, db)
+        await _store_morpheme(morpheme, word.guid, db)
 
-    return word_id
+    return word.guid
 
 
-async def _store_morpheme(morpheme: MorphemeCreate, word_id: str, db) -> str:
+async def _store_morpheme(morpheme: MorphemeCreate, word_guid: str, db) -> str:
     """Store a morpheme and create/link to lexeme if appropriate"""
 
     # Check if this morpheme already exists (same citation form + gloss + language)
-    existing = db.run(
-        """
-        MATCH (m:Morpheme {citation_form: $cf, gloss: $gloss, language: $lang})
-        RETURN m.id as id
-        LIMIT 1
-    """,
-        cf=morpheme.citation_form,
-        gloss=morpheme.gloss,
-        lang=morpheme.language,
-    ).single()
-
-    if existing:
-        morpheme_id = existing["id"]
-        # Link existing morpheme to this word
-        db.run(
-            """
-            MATCH (w:Word {id: $word_id})
-            MATCH (m:Morpheme {id: $morpheme_id})
-            CREATE (w)-[:CONTAINS]->(m)
-        """,
-            word_id=word_id,
-            morpheme_id=morpheme_id,
-        )
-    else:
-        # Create new morpheme
-        morpheme_id = str(uuid.uuid4())
-        db.run(
-            """
-            MATCH (w:Word {id: $word_id})
-            CREATE (m:Morpheme {
-                id: $id,
-                guid: $guid,
-                type: $type,
-                surface_form: $surface_form,
-                citation_form: $citation_form,
-                gloss: $gloss,
-                msa: $msa,
-                language: $language,
-                created_at: datetime()
-            })
-            CREATE (w)-[:CONTAINS]->(m)
-        """,
-            word_id=word_id,
-            id=morpheme_id,
-            guid=morpheme.guid,
-            type=morpheme.type.value,
-            surface_form=morpheme.surface_form,
-            citation_form=morpheme.citation_form,
-            gloss=morpheme.gloss,
-            msa=morpheme.msa,
-            language=morpheme.language,
-        )
-
-        # Create or link to lexeme if this is a stem
-        if morpheme.type.value == "stem" and morpheme.citation_form:
-            await _create_or_link_lexeme(morpheme_id, morpheme, db)
-
-    return morpheme_id
-
-
-async def _create_or_link_lexeme(morpheme_id: str, morpheme: MorphemeCreate, db):
-    """Create or link to a lexeme for stem morphemes"""
-
-    # Check if lexeme already exists
-    existing = db.run(
-        """
-        MATCH (l:Lexeme {citation_form: $cf, language: $lang})
-        RETURN l.id as id
-        LIMIT 1
-    """,
-        cf=morpheme.citation_form,
-        lang=morpheme.language,
-    ).single()
-
-    if existing:
-        lexeme_id = existing["id"]
-        # Update frequency
-        db.run(
-            """
-            MATCH (l:Lexeme {id: $lexeme_id})
-            SET l.frequency = l.frequency + 1
-        """,
-            lexeme_id=lexeme_id,
-        )
-    else:
-        # Create new lexeme
-        lexeme_id = str(uuid.uuid4())
-        db.run(
-            """
-            CREATE (l:Lexeme {
-                id: $id,
-                citation_form: $citation_form,
-                meaning: $meaning,
-                pos: $pos,
-                language: $language,
-                frequency: 1,
-                created_at: datetime()
-            })
-        """,
-            id=lexeme_id,
-            citation_form=morpheme.citation_form,
-            meaning=morpheme.gloss,
-            pos=morpheme.msa,
-            language=morpheme.language,
-        )
-
-    # Link morpheme to lexeme
     db.run(
         """
-        MATCH (m:Morpheme {id: $morpheme_id})
-        MATCH (l:Lexeme {id: $lexeme_id})
-        CREATE (m)-[:REALIZES]->(l)
-    """,
-        morpheme_id=morpheme_id,
-        lexeme_id=lexeme_id,
+        MATCH (w:Word {guid: $word_guid})
+        MERGE (m:Morpheme {guid: $guid})
+          ON CREATE SET m.id = randomUUID(),
+                        m.created_at = datetime()
+        SET m.type = $type,
+            m.surface_form = $surface_form,
+            m.citation_form = $citation_form,
+            m.gloss = $gloss,
+            m.msa = $msa,
+            m.language = $language,
+            m.updated_at = datetime()
+        MERGE (w)-[:CONTAINS]->(m)
+        """,
+        word_guid=word_guid,
+        guid=morpheme.guid,
+        type=morpheme.type.value,
+        surface_form=morpheme.surface_form,
+        citation_form=morpheme.citation_form,
+        gloss=morpheme.gloss,
+        msa=morpheme.msa,
+        language=morpheme.language,
+    )
+
+    # Create or link to lexeme if this is a stem
+    if morpheme.type.value == "stem" and morpheme.citation_form:
+        await _create_or_link_lexeme(morpheme, db)
+
+    return morpheme.guid
+
+
+async def _create_or_link_lexeme(morpheme: MorphemeCreate, db):
+    """Create or link to a lexeme for stem morphemes"""
+    # Check if lexeme already exists
+    db.run(
+        """
+        MERGE (l:Lexeme {citation_form: $citation_form, language: $language})
+          ON CREATE SET l.id = coalesce(l.id, randomUUID()),
+                        l.meaning = $meaning,
+                        l.pos = $pos,
+                        l.frequency = 1,
+                        l.created_at = datetime()
+          ON MATCH  SET l.frequency = coalesce(l.frequency, 0) + 1,
+                        l.updated_at = datetime()
+        WITH l
+        MATCH (m:Morpheme {guid: $m_guid})
+        MERGE (m)-[:REALIZES]->(l)
+        """,
+        citation_form=morpheme.citation_form,
+        language=morpheme.language,
+        meaning=morpheme.gloss,
+        pos=morpheme.msa,
+        m_guid=morpheme.guid,
     )
 
 
