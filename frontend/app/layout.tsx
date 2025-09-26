@@ -3,6 +3,7 @@ import { Inter } from "next/font/google";
 import { Metadata } from "next";
 import { Providers } from "./providers";
 import { Toaster } from "react-hot-toast";
+import Navigation from "./components/Navigation";
 
 const inter = Inter({ subsets: ["latin"] });
 
@@ -30,7 +31,10 @@ export default function RootLayout({
     <html lang="en" className="h-full">
       <body className={`${inter.className} h-full bg-gray-50`}>
         <Providers>
-          <div className="min-h-full">{children}</div>
+          <div className="min-h-full">
+            <Navigation />
+            <main>{children}</main>
+          </div>
           <Toaster
             position="top-right"
             toastOptions={{

@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Import routers
-from app.routers import auth, languages, documentation
+from app.routers import auth, languages, documentation, linguistic
 from app.database import init_neo4j, close_neo4j
 from app.core.config import settings
 
@@ -45,6 +45,9 @@ app.add_middleware(
 app.include_router(auth.router, prefix="/api/v1/auth", tags=["authentication"])
 app.include_router(languages.router, prefix="/api/v1/languages", tags=["languages"])
 app.include_router(documentation.router, prefix="/api/v1/docs", tags=["documentation"])
+app.include_router(
+    linguistic.router, prefix="/api/v1/linguistic", tags=["linguistic-data"]
+)
 
 
 @app.get("/")
