@@ -1,25 +1,13 @@
-import "./globals.css";
+import type { Metadata } from "next";
 import { Inter } from "next/font/google";
-import { Metadata } from "next";
-import { Providers } from "./providers";
-import { Toaster } from "react-hot-toast";
+import "./globals.css";
 import Navigation from "./components/Navigation";
 
 const inter = Inter({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "Lexiconnect",
-  description:
-    "IGT-first, graph-native tool for endangered/minority language documentation and research",
-  keywords: [
-    "linguistics",
-    "language documentation",
-    "IGT",
-    "endangered languages",
-  ],
-  authors: [{ name: "Lexiconnect Team" }],
-  viewport: "width=device-width, initial-scale=1",
-  robots: "index, follow",
+  title: "Lexiconnect - Linguistic Data Visualization",
+  description: "Visualize and explore linguistic connections and data",
 };
 
 export default function RootLayout({
@@ -28,24 +16,10 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en" className="h-full">
-      <body className={`${inter.className} h-full bg-gray-50`}>
-        <Providers>
-          <div className="min-h-full">
-            <Navigation />
-            <main>{children}</main>
-          </div>
-          <Toaster
-            position="top-right"
-            toastOptions={{
-              duration: 4000,
-              style: {
-                background: "#363636",
-                color: "#fff",
-              },
-            }}
-          />
-        </Providers>
+    <html lang="en">
+      <body className={inter.className}>
+        <Navigation />
+        <main className="min-h-screen">{children}</main>
       </body>
     </html>
   );

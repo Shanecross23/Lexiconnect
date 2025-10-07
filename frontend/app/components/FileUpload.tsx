@@ -1,296 +1,308 @@
 "use client";
 
 import { useState, useCallback } from "react";
-import {
-  DocumentTextIcon,
-  CloudArrowUpIcon,
-  CheckCircleIcon,
-  ExclamationTriangleIcon,
-} from "@heroicons/react/24/outline";
-import axios from "axios";
-import toast from "react-hot-toast";
 
-interface UploadStats {
-  total_texts: number;
-  total_paragraphs: number;
-  total_phrases: number;
-  total_words: number;
-  total_morphemes: number;
-  languages: string[];
-  pos_tags: string[];
-  morpheme_types: { [key: string]: number };
+interface FileUploadProps {
+  onUploadSuccess?: (data: any) => void;
+  onUploadError?: (error: string) => void;
 }
 
-interface UploadResponse {
-  message: string;
-  file_stats: UploadStats;
-  processed_texts: string[];
-}
-
-export default function FileUpload() {
+export default function FileUpload({
+  onUploadSuccess,
+  onUploadError,
+}: FileUploadProps) {
   const [isDragging, setIsDragging] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
-  const [uploadComplete, setUploadComplete] = useState(false);
-  const [uploadStats, setUploadStats] = useState<UploadStats | null>(null);
+  const [uploadProgress, setUploadProgress] = useState(0);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [uploadStatus, setUploadStatus] = useState<
+    "idle" | "success" | "error"
+  >("idle");
+  const [statusMessage, setStatusMessage] = useState("");
 
-  const handleDragOver = useCallback((e: React.DragEvent) => {
+  const handleDragEnter = useCallback((e: React.DragEvent) => {
     e.preventDefault();
+    e.stopPropagation();
     setIsDragging(true);
   }, []);
 
   const handleDragLeave = useCallback((e: React.DragEvent) => {
     e.preventDefault();
+    e.stopPropagation();
     setIsDragging(false);
+  }, []);
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
   }, []);
 
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
+    e.stopPropagation();
     setIsDragging(false);
 
-    const files = Array.from(e.dataTransfer.files);
-    const flexFile = files.find(
-      (file) => file.name.endsWith(".flextext") || file.name.endsWith(".xml")
-    );
-
-    if (flexFile) {
-      setSelectedFile(flexFile);
-    } else {
-      toast.error("Please select a valid FLEx file (.flextext or .xml)");
+    const files = e.dataTransfer.files;
+    if (files && files.length > 0) {
+      const file = files[0];
+      if (file.name.endsWith(".flextext")) {
+        setSelectedFile(file);
+        setUploadStatus("idle");
+      } else {
+        setUploadStatus("error");
+        setStatusMessage("Please upload a .flextext file");
+      }
     }
   }, []);
 
   const handleFileSelect = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
-      const file = e.target.files?.[0];
-      if (file) {
-        setSelectedFile(file);
+      const files = e.target.files;
+      if (files && files.length > 0) {
+        const file = files[0];
+        if (file.name.endsWith(".flextext")) {
+          setSelectedFile(file);
+          setUploadStatus("idle");
+        } else {
+          setUploadStatus("error");
+          setStatusMessage("Please upload a .flextext file");
+        }
       }
     },
     []
   );
 
-  const uploadFile = async () => {
+  const handleUpload = async () => {
     if (!selectedFile) return;
 
     setIsUploading(true);
-    setUploadComplete(false);
-    setUploadStats(null);
+    setUploadProgress(0);
+    setUploadStatus("idle");
 
     const formData = new FormData();
     formData.append("file", selectedFile);
 
     try {
-      const response = await axios.post<UploadResponse>(
-        `${
-          process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"
-        }/api/v1/linguistic/upload-flextext`,
-        formData,
-        {
-          headers: {
-            "Content-Type": "multipart/form-data",
-          },
-        }
-      );
+      // Simulate upload progress
+      const progressInterval = setInterval(() => {
+        setUploadProgress((prev) => {
+          if (prev >= 90) {
+            clearInterval(progressInterval);
+            return 90;
+          }
+          return prev + 10;
+        });
+      }, 200);
 
-      setUploadStats(response.data.file_stats);
-      setUploadComplete(true);
-      toast.success("File uploaded and processed successfully!");
-    } catch (error: any) {
-      console.error("Upload error:", error);
-      const errorMessage =
-        error.response?.data?.detail || "Failed to upload file";
-      toast.error(errorMessage);
+      const response = await fetch("/api/linguistic/upload", {
+        method: "POST",
+        body: formData,
+      });
+
+      clearInterval(progressInterval);
+      setUploadProgress(100);
+
+      if (!response.ok) {
+        throw new Error("Upload failed");
+      }
+
+      const data = await response.json();
+      setUploadStatus("success");
+      setStatusMessage("File uploaded successfully!");
+      onUploadSuccess?.(data);
+
+      // Reset after 3 seconds
+      setTimeout(() => {
+        setSelectedFile(null);
+        setUploadStatus("idle");
+        setUploadProgress(0);
+      }, 3000);
+    } catch (error) {
+      setUploadStatus("error");
+      setStatusMessage("Upload failed. Please try again.");
+      onUploadError?.(error instanceof Error ? error.message : "Unknown error");
     } finally {
       setIsUploading(false);
     }
   };
 
-  const resetUpload = () => {
+  const handleRemoveFile = () => {
     setSelectedFile(null);
-    setUploadComplete(false);
-    setUploadStats(null);
-    setIsUploading(false);
+    setUploadStatus("idle");
+    setStatusMessage("");
+    setUploadProgress(0);
   };
 
   return (
-    <div className="w-full max-w-2xl mx-auto p-6">
-      <div className="text-center mb-6">
-        {/* <DocumentTextIcon className="mx-auto h-12 w-12 text-primary-600" /> */}
-        <h2 className="mt-2 text-lg font-medium text-gray-900">
-          Upload FLEx Data
-        </h2>
-        <p className="mt-1 text-sm text-gray-500">
-          Upload your .flextext files to start analyzing linguistic data
-        </p>
-      </div>
-
-      {!uploadComplete ? (
-        <div className="space-y-4">
-          {/* File Drop Zone */}
-          <div
-            className={`relative border-2 border-dashed rounded-lg p-6 transition-colors ${
-              isDragging
-                ? "border-primary-400 bg-primary-50"
-                : "border-gray-300 hover:border-gray-400"
-            }`}
-            onDragOver={handleDragOver}
-            onDragLeave={handleDragLeave}
-            onDrop={handleDrop}
-          >
-            <div className="text-center">
-              <CloudArrowUpIcon className="mx-auto h-12 w-12 text-gray-400" />
-              <div className="mt-4">
-                <label htmlFor="file-upload" className="cursor-pointer">
-                  <span className="mt-2 block text-sm font-medium text-gray-900">
-                    {selectedFile
-                      ? selectedFile.name
-                      : "Drop your FLEx file here, or click to browse"}
-                  </span>
-                  <input
-                    id="file-upload"
-                    name="file-upload"
-                    type="file"
-                    className="sr-only"
-                    accept=".flextext,.xml"
-                    onChange={handleFileSelect}
-                  />
-                </label>
-                <p className="mt-1 text-sm text-gray-500">
-                  Supports .flextext and .xml files up to 50MB
-                </p>
-              </div>
-            </div>
+    <div className="w-full">
+      <div
+        className={`relative border-2 border-dashed rounded-xl p-8 transition-all ${
+          isDragging
+            ? "border-slate-400 bg-slate-50 dark:bg-slate-700/20"
+            : "border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800"
+        } ${selectedFile ? "pb-4" : ""}`}
+        onDragEnter={handleDragEnter}
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+      >
+        <div className="text-center">
+          <div className="mx-auto w-16 h-16 mb-4 bg-slate-100 dark:bg-slate-700 rounded-full flex items-center justify-center">
+            <svg
+              className="w-8 h-8 text-slate-700 dark:text-slate-200"
+              fill="none"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth="2"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+            >
+              <path d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+            </svg>
           </div>
 
-          {/* Selected File Info */}
-          {selectedFile && (
-            <div className="bg-gray-50 rounded-lg p-4">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center">
-                  {/* <DocumentTextIcon className="h-8 w-8 text-primary-600" /> */}
-                  <div className="ml-3">
-                    <p className="text-sm font-medium text-gray-900">
-                      {selectedFile.name}
-                    </p>
-                    <p className="text-sm text-gray-500">
-                      {(selectedFile.size / 1024 / 1024).toFixed(2)} MB
-                    </p>
-                  </div>
-                </div>
-                <button
-                  onClick={resetUpload}
-                  className="text-sm text-gray-500 hover:text-gray-700"
-                >
-                  Remove
-                </button>
-              </div>
-            </div>
-          )}
-
-          {/* Upload Button */}
-          <button
-            onClick={uploadFile}
-            disabled={!selectedFile || isUploading}
-            className={`w-full flex items-center justify-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white ${
-              !selectedFile || isUploading
-                ? "bg-gray-400 cursor-not-allowed"
-                : "bg-primary-600 hover:bg-primary-700"
-            }`}
-          >
-            {isUploading ? (
-              <>
-                <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2" />
-                Processing...
-              </>
-            ) : (
-              <>
-                <CloudArrowUpIcon className="h-4 w-4 mr-2" />
-                Upload File
-              </>
-            )}
-          </button>
-        </div>
-      ) : (
-        /* Upload Success */
-        <div className="text-center space-y-4">
-          <CheckCircleIcon className="mx-auto h-16 w-16 text-green-500" />
-          <h3 className="text-lg font-medium text-gray-900">
-            Upload Complete!
+          <h3 className="text-lg font-semibold text-slate-900 dark:text-white mb-2">
+            Upload FLEx Text File
           </h3>
+          <p className="text-sm text-slate-600 dark:text-slate-400 mb-4">
+            Drag and drop your .flextext file here, or click to browse
+          </p>
 
-          {uploadStats && (
-            <div className="bg-green-50 rounded-lg p-4 text-left">
-              <h4 className="font-medium text-green-900 mb-3">
-                File Statistics
-              </h4>
-              <div className="grid grid-cols-2 gap-4 text-sm">
-                <div>
-                  <span className="text-green-700">Texts:</span>
-                  <span className="ml-2 font-medium">
-                    {uploadStats.total_texts}
-                  </span>
+          <label htmlFor="file-upload" className="cursor-pointer">
+            <span className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-lg text-white bg-slate-800 hover:bg-slate-900 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-slate-500 transition-colors">
+              Select File
+            </span>
+            <input
+              id="file-upload"
+              type="file"
+              className="hidden"
+              accept=".flextext"
+              onChange={handleFileSelect}
+            />
+          </label>
+        </div>
+
+        {selectedFile && (
+          <div className="mt-6 pt-6 border-t border-slate-200 dark:border-slate-700">
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center space-x-3 flex-1 min-w-0">
+                <div className="w-10 h-10 bg-slate-100 dark:bg-slate-700 rounded-lg flex items-center justify-center flex-shrink-0">
+                  <svg
+                    className="w-5 h-5 text-slate-700 dark:text-slate-200"
+                    fill="none"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth="2"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                  >
+                    <path d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                  </svg>
                 </div>
-                <div>
-                  <span className="text-green-700">Paragraphs:</span>
-                  <span className="ml-2 font-medium">
-                    {uploadStats.total_paragraphs}
-                  </span>
-                </div>
-                <div>
-                  <span className="text-green-700">Phrases:</span>
-                  <span className="ml-2 font-medium">
-                    {uploadStats.total_phrases}
-                  </span>
-                </div>
-                <div>
-                  <span className="text-green-700">Words:</span>
-                  <span className="ml-2 font-medium">
-                    {uploadStats.total_words}
-                  </span>
-                </div>
-                <div>
-                  <span className="text-green-700">Morphemes:</span>
-                  <span className="ml-2 font-medium">
-                    {uploadStats.total_morphemes}
-                  </span>
-                </div>
-                <div>
-                  <span className="text-green-700">Languages:</span>
-                  <span className="ml-2 font-medium">
-                    {uploadStats.languages.length}
-                  </span>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium text-slate-900 dark:text-white truncate">
+                    {selectedFile.name}
+                  </p>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">
+                    {(selectedFile.size / 1024).toFixed(2)} KB
+                  </p>
                 </div>
               </div>
-
-              {uploadStats.languages.length > 0 && (
-                <div className="mt-3">
-                  <span className="text-green-700 text-sm">
-                    Languages detected:
-                  </span>
-                  <div className="mt-1">
-                    {uploadStats.languages.map((lang, index) => (
-                      <span
-                        key={index}
-                        className="inline-block bg-green-100 text-green-800 text-xs px-2 py-1 rounded mr-1 mb-1"
-                      >
-                        {lang}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              )}
+              <button
+                onClick={handleRemoveFile}
+                className="ml-4 p-2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 transition-colors"
+                disabled={isUploading}
+              >
+                <svg
+                  className="w-5 h-5"
+                  fill="none"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth="2"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                >
+                  <path d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
             </div>
-          )}
 
-          <button
-            onClick={resetUpload}
-            className="bg-primary-600 hover:bg-primary-700 text-white px-4 py-2 rounded-md text-sm font-medium"
-          >
-            Upload Another File
-          </button>
-        </div>
-      )}
+            {isUploading && (
+              <div className="mb-4">
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-xs text-slate-600 dark:text-slate-400">
+                    Uploading...
+                  </span>
+                  <span className="text-xs text-slate-600 dark:text-slate-400">
+                    {uploadProgress}%
+                  </span>
+                </div>
+                <div className="w-full bg-slate-200 dark:bg-slate-700 rounded-full h-2">
+                  <div
+                    className="bg-slate-800 dark:bg-slate-300 h-2 rounded-full transition-all duration-300"
+                    style={{ width: `${uploadProgress}%` }}
+                  />
+                </div>
+              </div>
+            )}
+
+            {uploadStatus === "success" && (
+              <div className="mb-4 p-3 bg-green-100 dark:bg-green-900/30 border border-green-200 dark:border-green-800 rounded-lg">
+                <p className="text-sm text-green-800 dark:text-green-200 flex items-center">
+                  <svg
+                    className="w-5 h-5 mr-2"
+                    fill="none"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth="2"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                  >
+                    <path d="M5 13l4 4L19 7" />
+                  </svg>
+                  {statusMessage}
+                </p>
+              </div>
+            )}
+
+            {uploadStatus === "error" && (
+              <div className="mb-4 p-3 bg-red-100 dark:bg-red-900/30 border border-red-200 dark:border-red-800 rounded-lg">
+                <p className="text-sm text-red-800 dark:text-red-200 flex items-center">
+                  <svg
+                    className="w-5 h-5 mr-2"
+                    fill="none"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth="2"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                  >
+                    <path d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                  {statusMessage}
+                </p>
+              </div>
+            )}
+
+            <button
+              onClick={handleUpload}
+              disabled={isUploading || uploadStatus === "success"}
+              className="w-full py-2 px-4 border border-transparent rounded-lg text-sm font-medium text-white bg-slate-800 hover:bg-slate-900 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-slate-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            >
+              {isUploading
+                ? "Uploading..."
+                : uploadStatus === "success"
+                ? "Uploaded!"
+                : "Upload File"}
+            </button>
+          </div>
+        )}
+      </div>
+
+      <div className="mt-4 text-xs text-slate-500 dark:text-slate-400">
+        <p>Supported file format: .flextext</p>
+        <p className="mt-1">Maximum file size: 10MB</p>
+      </div>
     </div>
   );
 }

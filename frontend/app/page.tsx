@@ -1,152 +1,143 @@
-import Link from "next/link";
-import {
-  ChartBarIcon,
-  DocumentTextIcon,
-  GlobeAltIcon,
-  UserGroupIcon,
-} from "@heroicons/react/24/outline";
+"use client";
 
-const features = [
-  {
-    name: "IGT-First Design",
-    description:
-      "Built specifically for Interlinear Glossed Text analysis and documentation.",
-    icon: DocumentTextIcon,
-  },
-  {
-    name: "Graph-Native",
-    description:
-      "Visualize and analyze linguistic relationships through graph structures.",
-    icon: ChartBarIcon,
-  },
-  {
-    name: "Language Documentation",
-    description:
-      "Comprehensive tools for documenting endangered and minority languages.",
-    icon: GlobeAltIcon,
-  },
-  {
-    name: "Collaborative Research",
-    description:
-      "Work together with other researchers and language communities.",
-    icon: UserGroupIcon,
-  },
-];
+import { useEffect, useState } from "react";
+import dynamic from "next/dynamic";
 
-export default function HomePage() {
+// Dynamically import the graph component to avoid SSR issues with Sigma.js
+const GraphVisualization = dynamic(
+  () => import("./components/GraphVisualization"),
+  { ssr: false }
+);
+
+export default function Home() {
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
   return (
-    <div className="bg-white">
-      {/* Hero section */}
-      <div className="relative overflow-hidden">
-        <div className="max-w-7xl mx-auto">
-          <div className="relative z-10 pb-8 bg-white sm:pb-16 md:pb-20 lg:max-w-2xl lg:w-full lg:pb-28 xl:pb-32">
-            {/* <svg
-              className="hidden lg:block absolute right-0 inset-y-0 h-full w-32 text-white transform translate-x-1/2"
-              fill="currentColor"
-              viewBox="0 0 100 100"
-              preserveAspectRatio="none"
-              aria-hidden="true"
-            >
-              <polygon points="50,0 100,0 50,100 0,100" />
-            </svg> */}
+    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 dark:from-slate-900 dark:to-slate-800">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <div className="mb-8">
+          <h1 className="text-4xl font-bold text-slate-900 dark:text-white mb-2">
+            Linguistic Network Visualization
+          </h1>
+          <p className="text-lg text-slate-600 dark:text-slate-300">
+            Explore and interact with linguistic connections and relationships
+          </p>
+        </div>
 
-            <main className="mt-10 mx-auto max-w-7xl px-4 sm:mt-12 sm:px-6 md:mt-16 lg:mt-20 lg:px-8 xl:mt-28">
-              <div className="sm:text-center lg:text-left">
-                <h1 className="text-4xl tracking-tight font-extrabold text-gray-900 sm:text-5xl md:text-6xl">
-                  <span className="block xl:inline">
-                    Language documentation
-                  </span>{" "}
-                  <span className="block text-primary-600 xl:inline">
-                    reimagined
-                  </span>
-                </h1>
-                <p className="mt-3 text-base text-gray-500 sm:mt-5 sm:text-lg sm:max-w-xl sm:mx-auto md:mt-5 md:text-xl lg:mx-0">
-                  Lexiconnect is an IGT-first, graph-native tool designed
-                  specifically for endangered and minority language
-                  documentation and research.
-                </p>
-                <div className="mt-5 sm:mt-8 sm:flex sm:justify-center lg:justify-start">
-                  <div className="rounded-md shadow">
-                    <Link
-                      href="/upload"
-                      className="w-full flex items-center justify-center px-8 py-3 border border-transparent text-base font-medium rounded-md text-white bg-primary-600 hover:bg-primary-700 md:py-4 md:text-lg md:px-10"
-                    >
-                      Upload FLEx Data
-                    </Link>
-                  </div>
-                  <div className="mt-3 sm:mt-0 sm:ml-3">
-                    <Link
-                      href="/demo"
-                      className="w-full flex items-center justify-center px-8 py-3 border border-transparent text-base font-medium rounded-md text-primary-700 bg-primary-100 hover:bg-primary-200 md:py-4 md:text-lg md:px-10"
-                    >
-                      View demo
-                    </Link>
-                  </div>
+        <div className="bg-white dark:bg-slate-800 rounded-xl shadow-lg overflow-hidden border border-slate-200 dark:border-slate-700">
+          <div className="p-4 border-b border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/50">
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-semibold text-slate-900 dark:text-white">
+                Interactive Graph
+              </h2>
+              <div className="flex items-center space-x-2 text-sm text-slate-600 dark:text-slate-400">
+                <span>
+                  Drag to pan • Scroll to zoom • Click nodes to interact
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <div className="relative" style={{ height: "calc(100vh - 300px)" }}>
+            {mounted ? (
+              <GraphVisualization />
+            ) : (
+              <div className="absolute inset-0 flex items-center justify-center">
+                <div className="flex items-center space-x-2">
+                  <div className="w-4 h-4 bg-slate-800 rounded-full animate-bounce"></div>
+                  <div
+                    className="w-4 h-4 bg-slate-800 rounded-full animate-bounce"
+                    style={{ animationDelay: "0.1s" }}
+                  ></div>
+                  <div
+                    className="w-4 h-4 bg-slate-800 rounded-full animate-bounce"
+                    style={{ animationDelay: "0.2s" }}
+                  ></div>
                 </div>
               </div>
-            </main>
+            )}
           </div>
         </div>
-        <div className="lg:absolute lg:inset-y-0 lg:right-0 lg:w-1/2">
-          <div className="h-56 w-full bg-gradient-to-br from-primary-100 to-primary-200 sm:h-72 md:h-96 lg:w-full lg:h-full flex items-center justify-center">
-            <div className="text-primary-600 text-6xl font-bold">IGT</div>
-          </div>
-        </div>
-      </div>
 
-      {/* Features section */}
-      <div className="py-12 bg-white">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="lg:text-center">
-            <h2 className="text-base text-primary-600 font-semibold tracking-wide uppercase">
-              Features
-            </h2>
-            <p className="mt-2 text-3xl leading-8 font-extrabold tracking-tight text-gray-900 sm:text-4xl">
-              Built for linguistic research
+        <div className="mt-8 grid grid-cols-1 md:grid-cols-3 gap-6">
+          <div className="bg-white dark:bg-slate-800 rounded-lg shadow-md p-6 border border-slate-200 dark:border-slate-700">
+            <div className="flex items-center space-x-3 mb-3">
+              <div className="w-10 h-10 bg-slate-100 dark:bg-slate-700 rounded-lg flex items-center justify-center">
+                <svg
+                  className="w-6 h-6 text-slate-700 dark:text-slate-200"
+                  fill="none"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth="2"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                >
+                  <path d="M13 10V3L4 14h7v7l9-11h-7z" />
+                </svg>
+              </div>
+              <h3 className="text-lg font-semibold text-slate-900 dark:text-white">
+                Fast & Interactive
+              </h3>
+            </div>
+            <p className="text-slate-600 dark:text-slate-300 text-sm">
+              Powered by Sigma.js for smooth, real-time visualization of complex
+              linguistic networks
             </p>
-            <p className="mt-4 max-w-2xl text-xl text-gray-500 lg:mx-auto">
-              Everything you need to document, analyze, and preserve endangered
-              languages.
+          </div>
+
+          <div className="bg-white dark:bg-slate-800 rounded-lg shadow-md p-6 border border-slate-200 dark:border-slate-700">
+            <div className="flex items-center space-x-3 mb-3">
+              <div className="w-10 h-10 bg-slate-100 dark:bg-slate-700 rounded-lg flex items-center justify-center">
+                <svg
+                  className="w-6 h-6 text-slate-700 dark:text-slate-200"
+                  fill="none"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth="2"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                >
+                  <path d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                </svg>
+              </div>
+              <h3 className="text-lg font-semibold text-slate-900 dark:text-white">
+                Easy Upload
+              </h3>
+            </div>
+            <p className="text-slate-600 dark:text-slate-300 text-sm">
+              Upload FLEx text files directly and visualize your linguistic data
+              instantly
             </p>
           </div>
 
-          <div className="mt-10">
-            <dl className="space-y-10 md:space-y-0 md:grid md:grid-cols-2 md:gap-x-8 md:gap-y-10">
-              {features.map((feature) => (
-                <div key={feature.name} className="relative">
-                  <dt>
-                    <div className="absolute flex items-center justify-center h-10 w-10 rounded-md bg-primary-500 text-white">
-                      <feature.icon className="h-6 w-6" aria-hidden="true" />
-                    </div>
-                    <p className="ml-16 text-lg leading-6 font-medium text-gray-900">
-                      {feature.name}
-                    </p>
-                  </dt>
-                  <dd className="mt-2 ml-16 text-base text-gray-500">
-                    {feature.description}
-                  </dd>
-                </div>
-              ))}
-            </dl>
+          <div className="bg-white dark:bg-slate-800 rounded-lg shadow-md p-6 border border-slate-200 dark:border-slate-700">
+            <div className="flex items-center space-x-3 mb-3">
+              <div className="w-10 h-10 bg-slate-100 dark:bg-slate-700 rounded-lg flex items-center justify-center">
+                <svg
+                  className="w-6 h-6 text-slate-700 dark:text-slate-200"
+                  fill="none"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth="2"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                >
+                  <path d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+                </svg>
+              </div>
+              <h3 className="text-lg font-semibold text-slate-900 dark:text-white">
+                Rich Insights
+              </h3>
+            </div>
+            <p className="text-slate-600 dark:text-slate-300 text-sm">
+              Discover connections and patterns in your linguistic data through
+              interactive exploration
+            </p>
           </div>
-        </div>
-      </div>
-
-      {/* CTA section */}
-      <div className="bg-primary-600">
-        <div className="max-w-2xl mx-auto text-center py-16 px-4 sm:py-20 sm:px-6 lg:px-8">
-          <h2 className="text-3xl font-extrabold text-white sm:text-4xl">
-            <span className="block">Ready to start documenting?</span>
-          </h2>
-          <p className="mt-4 text-lg leading-6 text-primary-200">
-            Join researchers worldwide in preserving linguistic diversity.
-          </p>
-          <Link
-            href="/auth/signup"
-            className="mt-8 w-full inline-flex items-center justify-center px-5 py-3 border border-transparent text-base font-medium rounded-md text-primary-600 bg-white hover:bg-primary-50 sm:w-auto"
-          >
-            Sign up for free
-          </Link>
         </div>
       </div>
     </div>
