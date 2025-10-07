@@ -20,6 +20,13 @@ sleep 10
 echo "🔍 Checking service status..."
 docker-compose -f docker-compose.free.yml ps
 
+# Source the apply-schema script and run it
+echo "📊 Applying database schema..."
+source ./apply-schema.sh
+if ! apply_schema; then
+    echo "⚠️ Warning: Schema application failed. You may need to run ./apply-schema.sh manually after all services are fully ready."
+fi
+
 echo ""
 echo "✅ Lexiconnect is running!"
 echo ""
