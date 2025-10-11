@@ -1,9 +1,11 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import FileUpload from "../components/FileUpload";
 
 export default function UploadPage() {
+  const router = useRouter();
   const [uploadedFiles, setUploadedFiles] = useState<any[]>([]);
   const [showSuccess, setShowSuccess] = useState(false);
 
@@ -177,7 +179,10 @@ export default function UploadPage() {
                       </p>
                     </div>
                   </div>
-                  <button className="text-slate-700 dark:text-slate-200 text-sm font-medium hover:text-slate-900 dark:hover:text-white transition-colors">
+                  <button
+                    onClick={() => router.push("/")}
+                    className="text-slate-700 dark:text-slate-200 text-sm font-medium hover:text-slate-900 dark:hover:text-white transition-colors"
+                  >
                     View
                   </button>
                 </div>

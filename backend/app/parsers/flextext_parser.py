@@ -4,21 +4,22 @@ import uuid
 from typing import List, Dict, Optional, Any
 from app.models.linguistic import (
     InterlinearTextCreate,
+    SectionCreate,
     ParagraphCreate,
     PhraseCreate,
     WordCreate,
     MorphemeCreate,
-    LinguisticItem,
     MorphemeType,
-    ItemType,
 )
 
 
 _UUID_NS = uuid.UUID("11111111-1111-1111-1111-111111111111")
 
+
 def stable_uuid(*parts: str) -> str:
     """Deterministic UUID"""
     return str(uuid.uuid5(_UUID_NS, "|".join(parts)))
+
 
 class FlexTextParser:
     """Parser for FLEx XML (.flextext) files"""
@@ -67,28 +68,60 @@ class FlexTextParser:
             elif item_type == "comment":
                 comment = item_text
 
-        guid = element.get("guid") or stable_uuid("text", title.strip(), source.strip())
+        # Use ID property to match schema
+        text_id = element.get("guid") or stable_uuid(
+            "text", title.strip(), source.strip()
+        )
 
-        # Parse paragraphs
-        paragraphs = []
+        # Parse paragraphs as sections (mapping FLEx paragraphs to schema Sections)
+        sections = []
         paragraphs_element = element.find("./paragraphs")
         if paragraphs_element is not None:
-            for i, paragraph_elem in enumerate(paragraphs_element.findall("./paragraph")):
-                paragraph = self._parse_paragraph(paragraph_elem, i, guid)
-                if paragraph:
-                    paragraphs.append(paragraph)
+            for i, paragraph_elem in enumerate(
+                paragraphs_element.findall("./paragraph")
+            ):
+                section = self._parse_section(paragraph_elem, i, text_id)
+                if section:
+                    sections.append(section)
 
         return InterlinearTextCreate(
-            guid=guid,
+            ID=text_id,
             title=title,
             source=source,
             comment=comment,
             language_code=language_code,
-            paragraphs=paragraphs,
+            sections=sections,
+            paragraphs=[],  # Keep empty for backward compatibility
         )
 
-    def _parse_paragraph(self, element, order: int, parent_guid: str) -> Optional[ParagraphCreate]:
-        """Parse a paragraph element"""
+    def _parse_section(
+        self, element, order: int, parent_id: str
+    ) -> Optional[SectionCreate]:
+        """Parse a paragraph element as a Section (matches DATABASE.md schema)"""
+        section_id = element.get("guid") or stable_uuid(
+            "section", parent_id, str(order)
+        )
+
+        phrases = []
+        all_words = []
+
+        phrases_element = element.find("./phrases")
+        if phrases_element is not None:
+            for i, phrase_elem in enumerate(phrases_element.findall("./phrase")):
+                phrase = self._parse_phrase(phrase_elem, section_id, i)
+                if phrase:
+                    phrases.append(phrase)
+                    # Also collect all words for SECTION_CONTAINS relationship
+                    all_words.extend(phrase.words)
+
+        return SectionCreate(
+            ID=section_id, order=order, phrases=phrases, words=all_words
+        )
+
+    def _parse_paragraph(
+        self, element, order: int, parent_guid: str
+    ) -> Optional[ParagraphCreate]:
+        """Parse a paragraph element (kept for backward compatibility)"""
         guid = element.get("guid") or stable_uuid("paragraph", parent_guid, str(order))
 
         phrases = []
@@ -101,7 +134,9 @@ class FlexTextParser:
 
         return ParagraphCreate(guid=guid, order=order, phrases=phrases)
 
-    def _parse_phrase(self, element, parent_guid: str, order: int) -> Optional[PhraseCreate]:
+    def _parse_phrase(
+        self, element, parent_id: str, order: int
+    ) -> Optional[PhraseCreate]:
         """Parse a phrase element"""
 
         # Extract phrase-level items
@@ -121,26 +156,29 @@ class FlexTextParser:
                 if item_lang:
                     language = item_lang
 
-        guid = element.get("guid") or stable_uuid("phrase", parent_guid, str(order))
+        phrase_id = element.get("guid") or stable_uuid("phrase", parent_id, str(order))
 
         # Parse words
         words = []
         words_element = element.find("./words")
         if words_element is not None:
             for k, word_elem in enumerate(words_element.findall("./word")):
-                word = self._parse_word(word_elem, language, guid, k)
+                word = self._parse_word(word_elem, language, phrase_id, k)
                 if word:
                     words.append(word)
 
         return PhraseCreate(
-            guid=guid,
+            ID=phrase_id,
             segnum=segnum,
             surface_text=surface_text,
             words=words,
             language=language,
+            order=order,
         )
 
-    def _parse_word(self, element, default_language: str, parent_guid: str, order: int) -> Optional[WordCreate]:
+    def _parse_word(
+        self, element, default_language: str, parent_id: str, order: int
+    ) -> Optional[WordCreate]:
         """Parse a word element"""
 
         # Extract word-level items
@@ -165,7 +203,7 @@ class FlexTextParser:
             elif item_type == "punct":
                 # Handle punctuation as special case
                 return WordCreate(
-                    guid=stable_uuid("punct", parent_guid, str(order), item_text),
+                    ID=stable_uuid("punct", parent_id, str(order), item_text),
                     surface_form=item_text,
                     gloss="",
                     pos="PUNCT",
@@ -178,13 +216,15 @@ class FlexTextParser:
         morphemes_element = element.find("./morphemes")
         if morphemes_element is not None:
             for j, morph_elem in enumerate(morphemes_element.findall("./morph")):
-                morpheme = self._parse_morpheme(morph_elem, language, parent_guid=parent_guid, index=j, word_order=order)
+                morpheme = self._parse_morpheme(
+                    morph_elem, language, parent_id=parent_id, index=j, word_order=order
+                )
                 if morpheme:
                     morphemes.append(morpheme)
 
-        guid = element.get("guid") or stable_uuid("word", parent_guid, str(order))
+        word_id = element.get("guid") or stable_uuid("word", parent_id, str(order))
         return WordCreate(
-            guid=guid,
+            ID=word_id,
             surface_form=surface_form,
             gloss=gloss,
             pos=pos,
@@ -192,7 +232,14 @@ class FlexTextParser:
             language=language,
         )
 
-    def _parse_morpheme(self,element,default_language: str,parent_guid: str, index: int = 0, word_order: Optional[int] = None,) -> Optional[MorphemeCreate]:
+    def _parse_morpheme(
+        self,
+        element,
+        default_language: str,
+        parent_id: str,
+        index: int = 0,
+        word_order: Optional[int] = None,
+    ) -> Optional[MorphemeCreate]:
         """Parse a morpheme element"""
 
         # Convert FLEx morph types to our enum
@@ -230,10 +277,12 @@ class FlexTextParser:
             elif item_type == "msa":
                 msa = item_text
 
-        guid = element.get("guid") or stable_uuid("morph", parent_guid, str(word_order or ""), str(index))
+        morpheme_id = element.get("guid") or stable_uuid(
+            "morph", parent_id, str(word_order or ""), str(index)
+        )
 
         return MorphemeCreate(
-            guid=guid,
+            ID=morpheme_id,
             type=morpheme_type,
             surface_form=surface_form,
             citation_form=citation_form,
@@ -244,35 +293,29 @@ class FlexTextParser:
 
     def get_language_stats(self, texts: List[InterlinearTextCreate]) -> Dict[str, Any]:
         """Generate statistics about the parsed texts"""
-        languages_set = set()
-        pos_tags_set = set()
+        languages_set: set[str] = set()
+        pos_tags_set: set[str] = set()
         morpheme_types_dict: Dict[str, int] = {}
 
-        stats = {
-            "total_texts": len(texts),
-            "total_paragraphs": 0,
-            "total_phrases": 0,
-            "total_words": 0,
-            "total_morphemes": 0,
-            "languages": languages_set,
-            "morpheme_types": morpheme_types_dict,
-            "pos_tags": pos_tags_set,
-        }
+        total_sections = 0
+        total_phrases = 0
+        total_words = 0
+        total_morphemes = 0
 
         for text in texts:
             languages_set.add(text.language_code)
-            stats["total_paragraphs"] += len(text.paragraphs)
+            total_sections += len(text.sections)
 
-            for paragraph in text.paragraphs:
-                stats["total_phrases"] += len(paragraph.phrases)
+            for section in text.sections:
+                total_phrases += len(section.phrases)
 
-                for phrase in paragraph.phrases:
-                    stats["total_words"] += len(phrase.words)
+                for phrase in section.phrases:
+                    total_words += len(phrase.words)
 
                     for word in phrase.words:
                         if word.pos:
                             pos_tags_set.add(word.pos)
-                        stats["total_morphemes"] += len(word.morphemes)
+                        total_morphemes += len(word.morphemes)
 
                         for morpheme in word.morphemes:
                             morph_type = morpheme.type.value
@@ -280,11 +323,17 @@ class FlexTextParser:
                                 morpheme_types_dict.get(morph_type, 0) + 1
                             )
 
-        # Convert sets to lists for JSON serialization
-        stats["languages"] = list(languages_set)
-        stats["pos_tags"] = list(pos_tags_set)
-
-        return stats
+        # Return stats dictionary
+        return {
+            "total_texts": len(texts),
+            "total_sections": total_sections,
+            "total_phrases": total_phrases,
+            "total_words": total_words,
+            "total_morphemes": total_morphemes,
+            "languages": list(languages_set),
+            "morpheme_types": morpheme_types_dict,
+            "pos_tags": list(pos_tags_set),
+        }
 
 
 def parse_flextext_file(file_path: str) -> List[InterlinearTextCreate]:
@@ -299,6 +348,7 @@ def get_file_stats(file_path: str) -> Dict[str, Any]:
     texts = parser.parse_file(file_path)
     return parser.get_language_stats(texts)
 
+
 # Methods for creating JSON objects from FLEx
 def _morpheme_to_dict(m) -> Dict[str, Any]:
     return {
@@ -311,6 +361,7 @@ def _morpheme_to_dict(m) -> Dict[str, Any]:
         "language": getattr(m, "language", None),
     }
 
+
 def _word_to_dict(w) -> Dict[str, Any]:
     return {
         "guid": getattr(w, "guid", None),
@@ -321,6 +372,7 @@ def _word_to_dict(w) -> Dict[str, Any]:
         "morphemes": [_morpheme_to_dict(m) for m in getattr(w, "morphemes", []) or []],
     }
 
+
 def _phrase_to_dict(ph) -> Dict[str, Any]:
     return {
         "guid": getattr(ph, "guid", None),
@@ -330,12 +382,14 @@ def _phrase_to_dict(ph) -> Dict[str, Any]:
         "words": [_word_to_dict(w) for w in getattr(ph, "words", []) or []],
     }
 
+
 def _paragraph_to_dict(p) -> Dict[str, Any]:
     return {
         "guid": getattr(p, "guid", None),
         "order": getattr(p, "order", None),
         "phrases": [_phrase_to_dict(ph) for ph in getattr(p, "phrases", []) or []],
     }
+
 
 def _text_to_dict(t) -> Dict[str, Any]:
     return {
@@ -344,16 +398,21 @@ def _text_to_dict(t) -> Dict[str, Any]:
         "source": getattr(t, "source", ""),
         "comment": getattr(t, "comment", ""),
         "language_code": getattr(t, "language_code", None),
-        "paragraphs": [_paragraph_to_dict(p) for p in getattr(t, "paragraphs", []) or []],
+        "paragraphs": [
+            _paragraph_to_dict(p) for p in getattr(t, "paragraphs", []) or []
+        ],
     }
+
 
 def texts_to_jsonable(texts: List[InterlinearTextCreate]) -> List[Dict[str, Any]]:
     return [_text_to_dict(t) for t in texts]
+
 
 def parse_flextext_to_json(file_path: str) -> List[Dict[str, Any]]:
     parser = FlexTextParser()
     texts = parser.parse_file(file_path)
     return texts_to_jsonable(texts)
+
 
 def parse_flextext_to_json_string(file_path: str, pretty: bool = True) -> str:
     data = parse_flextext_to_json(file_path)

@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import List, Optional, Dict, Any
+from typing import List, Optional
 from enum import Enum
 
 
@@ -34,7 +34,7 @@ class LinguisticItem(BaseModel):
 
 
 class MorphemeCreate(BaseModel):
-    guid: str
+    ID: str  # Using ID to match schema
     type: MorphemeType
     surface_form: str = ""
     citation_form: str = ""
@@ -44,8 +44,7 @@ class MorphemeCreate(BaseModel):
 
 
 class MorphemeResponse(BaseModel):
-    id: str
-    guid: str
+    ID: str
     type: MorphemeType
     surface_form: str
     citation_form: str
@@ -56,7 +55,7 @@ class MorphemeResponse(BaseModel):
 
 
 class WordCreate(BaseModel):
-    guid: str
+    ID: str  # Using ID to match schema
     surface_form: str
     gloss: str = ""
     pos: str = ""
@@ -65,8 +64,7 @@ class WordCreate(BaseModel):
 
 
 class WordResponse(BaseModel):
-    id: str
-    guid: str
+    ID: str
     surface_form: str
     gloss: str
     pos: str
@@ -76,16 +74,16 @@ class WordResponse(BaseModel):
 
 
 class PhraseCreate(BaseModel):
-    guid: str
+    ID: str  # Using ID to match schema
     segnum: str = ""
     surface_text: str = ""
     words: List[WordCreate] = []
     language: str
+    order: int = 0  # For PHRASE_COMPOSED_OF relationship
 
 
 class PhraseResponse(BaseModel):
-    id: str
-    guid: str
+    ID: str
     segnum: str
     surface_text: str
     language: str
@@ -93,6 +91,41 @@ class PhraseResponse(BaseModel):
     created_at: str
 
 
+class GlossCreate(BaseModel):
+    """Gloss annotation model aligned with DATABASE.md schema"""
+
+    ID: str
+    annotation: str  # The gloss text/annotation
+    gloss_type: str = "word"  # "word", "phrase", or "morpheme"
+    language: str = "en"  # Language of the gloss
+
+
+class GlossResponse(BaseModel):
+    ID: str
+    annotation: str
+    gloss_type: str
+    language: str
+    created_at: str
+
+
+class SectionCreate(BaseModel):
+    """Section model aligned with DATABASE.md schema"""
+
+    ID: str  # Using ID to match schema
+    order: int = 0
+    phrases: List[PhraseCreate] = []
+    words: List[WordCreate] = []  # Sections can contain words directly
+
+
+class SectionResponse(BaseModel):
+    ID: str
+    order: int
+    phrase_count: int
+    word_count: int
+    created_at: str
+
+
+# Keep Paragraph models for backward compatibility during transition
 class ParagraphCreate(BaseModel):
     guid: str
     order: int
@@ -108,22 +141,23 @@ class ParagraphResponse(BaseModel):
 
 
 class InterlinearTextCreate(BaseModel):
-    guid: str
+    ID: str  # Using ID to match schema
     title: str
     source: str = ""
     comment: str = ""
     language_code: str
+    sections: List[SectionCreate] = []
+    # Keep for backward compatibility during transition
     paragraphs: List[ParagraphCreate] = []
 
 
 class InterlinearTextResponse(BaseModel):
-    id: str
-    guid: str
+    ID: str
     title: str
     source: str
     comment: str
     language_code: str
-    paragraph_count: int
+    section_count: int
     word_count: int
     morpheme_count: int
     created_at: str

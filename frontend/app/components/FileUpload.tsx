@@ -94,7 +94,7 @@ export default function FileUpload({
         });
       }, 200);
 
-      const response = await fetch("/api/linguistic/upload", {
+      const response = await fetch("/api/v1/linguistic/upload-flextext", {
         method: "POST",
         body: formData,
       });

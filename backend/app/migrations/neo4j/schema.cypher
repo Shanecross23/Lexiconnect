@@ -3,7 +3,7 @@
 // ============================================================
 
 // ---------------------
-// Node Constraints
+// Node Constraints (Unique IDs)
 // ---------------------
 
 CREATE CONSTRAINT gloss_id IF NOT EXISTS
@@ -29,26 +29,69 @@ FOR (u:User) REQUIRE u.ID IS UNIQUE;
 
 
 // ---------------------
-// Relationship Patterns
+// Indexes for Performance
 // ---------------------
 
-CREATE (:Word)-[:WORD_MADE_OF]->(:Morpheme);
-CREATE (:Phrase)-[:PHRASE_COMPOSED_OF {Order: 0}]->(:Word);
-CREATE (:Section)-[:SECTION_CONTAINS]->(:Word);
-CREATE (:Section)-[:PHRASE_IN_SECTION]->(:Phrase);
-CREATE (:Text)-[:SECTION_PART_OF_TEXT]->(:Section);
-CREATE (:Gloss)-[:ANALYZES]->(:Word);
-CREATE (:Gloss)-[:ANALYZES]->(:Phrase);
-CREATE (:Gloss)-[:ANALYZES]->(:Morpheme);
-CREATE (:User)-[:HAS_PERMISSIONS]->(:Text);
+CREATE INDEX word_surface_form IF NOT EXISTS
+FOR (w:Word) ON (w.surface_form);
+
+CREATE INDEX word_language IF NOT EXISTS
+FOR (w:Word) ON (w.language);
+
+CREATE INDEX morpheme_citation_form IF NOT EXISTS
+FOR (m:Morpheme) ON (m.citation_form);
+
+CREATE INDEX morpheme_gloss IF NOT EXISTS
+FOR (m:Morpheme) ON (m.gloss);
+
+CREATE INDEX text_language IF NOT EXISTS
+FOR (t:Text) ON (t.language_code);
+
+CREATE INDEX gloss_annotation IF NOT EXISTS
+FOR (g:Gloss) ON (g.annotation);
 
 
 // ---------------------
-// Notes
+// Relationship Pattern Documentation
 // ---------------------
 
-// Each Text acts as a document container composed of Sections.
-// Phrase, Word, and Morpheme form the linguistic decomposition chain.
-// Gloss nodes attach to analyzed linguistic units (Word, Phrase, Morpheme).
-// User nodes define access through HAS_PERMISSIONS; authentication is external.
+// NOTE: The following are EXAMPLES of relationship patterns.
+// These are not executable CREATE statements, but documentation
+// of the expected relationship structure in the graph.
+
+// Text → Section relationship:
+// (:Text)-[:SECTION_PART_OF_TEXT]->(:Section)
+
+// Section → Word relationship:
+// (:Section)-[:SECTION_CONTAINS]->(:Word)
+
+// Section → Phrase relationship:
+// (:Section)-[:PHRASE_IN_SECTION]->(:Phrase)
+
+// Phrase → Word relationship (with Order property):
+// (:Phrase)-[:PHRASE_COMPOSED_OF {Order: integer}]->(:Word)
+
+// Word → Morpheme relationship:
+// (:Word)-[:WORD_MADE_OF]->(:Morpheme)
+
+// Gloss → linguistic unit relationships:
+// (:Gloss)-[:ANALYZES]->(:Word)
+// (:Gloss)-[:ANALYZES]->(:Phrase)
+// (:Gloss)-[:ANALYZES]->(:Morpheme)
+
+// User permissions:
+// (:User)-[:HAS_PERMISSIONS]->(:Text)
+
+
+// ---------------------
+// Schema Notes
+// ---------------------
+
+// 1. All nodes use 'ID' property (not 'id' or 'guid')
+// 2. Text nodes are document containers
+// 3. Section nodes subdivide texts (paragraphs, chapters, etc.)
+// 4. Phrase, Word, and Morpheme form the linguistic decomposition chain
+// 5. Gloss nodes attach linguistic annotations via ANALYZES relationship
+// 6. User nodes define access control via HAS_PERMISSIONS relationship
+// 7. Authentication and authorization are handled at the application layer
 
