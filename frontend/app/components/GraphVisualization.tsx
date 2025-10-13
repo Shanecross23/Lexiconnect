@@ -37,7 +37,6 @@ function buildGraphFromData(data: any) {
         size: node.size || 10,
         color: node.color || "#64748b",
         nodeType: node.type, // Store as nodeType to avoid conflict with Sigma's type
-        type: "circle", // Sigma.js render type
         x: Math.random() * 100,
         y: Math.random() * 100,
       });
@@ -53,7 +52,6 @@ function buildGraphFromData(data: any) {
               size: edge.size || 2,
               color: edge.color || "#94a3b8",
               relationshipType: edge.type || "", // Store relationship type separately
-              type: "arrow", // Sigma.js render type for directed edges
             });
           }
         } catch (error) {
@@ -68,7 +66,6 @@ function buildGraphFromData(data: any) {
       size: 20,
       color: "#64748b",
       nodeType: "Empty",
-      type: "circle", // Sigma.js render type
       x: 50,
       y: 50,
     });
@@ -243,7 +240,7 @@ export default function GraphVisualization() {
 
       <SigmaContainer
         key={refreshKey}
-        style={{ height: "100%", width: "100%" }}
+        style={{ height: "100%", width: "100%", minHeight: "400px" }}
         settings={{
           renderEdgeLabels: false,
           defaultNodeColor: "#0ea5e9",
@@ -252,6 +249,7 @@ export default function GraphVisualization() {
           labelWeight: "bold",
           labelColor: { color: "#1e293b" },
           enableEdgeEvents: true,
+          allowInvalidContainer: true,
         }}
       >
         <LoadGraph />

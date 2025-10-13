@@ -42,7 +42,10 @@ export default function Home() {
             </div>
           </div>
 
-          <div className="relative" style={{ height: "calc(100vh - 300px)" }}>
+          <div
+            className="relative w-full"
+            style={{ height: "calc(100vh - 300px)", minHeight: "500px" }}
+          >
             {mounted ? (
               <GraphVisualization />
             ) : (

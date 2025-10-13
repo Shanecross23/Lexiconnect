@@ -494,34 +494,56 @@ async def get_graph_data(
         else:
             # Get a sample from the entire database
             cypher_query = """
-                // Get sample nodes from each type
-                MATCH (t:Text)
-                WITH t LIMIT 1
-                OPTIONAL MATCH (t)-[:SECTION_PART_OF_TEXT]->(s:Section)
-                WITH t, collect(s)[0..2] as sections
-                UNWIND sections as s
-                OPTIONAL MATCH (s)-[:PHRASE_IN_SECTION]->(ph:Phrase)
-                OPTIONAL MATCH (s)-[:SECTION_CONTAINS]->(w:Word)
-                WITH t, s, collect(DISTINCT ph)[0..5] as phrases, collect(DISTINCT w)[0..10] as words
-                UNWIND (CASE WHEN size(phrases) > 0 THEN phrases ELSE [null] END) as ph
-                UNWIND (CASE WHEN size(words) > 0 THEN words ELSE [null] END) as w
-                OPTIONAL MATCH (ph)-[r:PHRASE_COMPOSED_OF]->(pw:Word)
-                OPTIONAL MATCH (w)-[:WORD_MADE_OF]->(m:Morpheme)
-                OPTIONAL MATCH (pw)-[:WORD_MADE_OF]->(pm:Morpheme)
-                OPTIONAL MATCH (g:Gloss)-[:ANALYZES]->(analyzed)
-                WHERE analyzed IN [w, pw, m, pm, ph]
+                // Sample different node types from across the database
+                CALL {
+                    MATCH (t:Text) RETURN t LIMIT 3
+                }
+                CALL {
+                    MATCH (s:Section) RETURN s LIMIT 10
+                }
+                CALL {
+                    MATCH (ph:Phrase) RETURN ph LIMIT 20
+                }
+                CALL {
+                    MATCH (w:Word) 
+                    RETURN w 
+                    LIMIT $limit
+                }
+                CALL {
+                    MATCH (m:Morpheme) RETURN m LIMIT 30
+                }
+                CALL {
+                    MATCH (g:Gloss) RETURN g LIMIT 40
+                }
                 
-                // Return all unique nodes and relationships
-                RETURN collect(DISTINCT t) + collect(DISTINCT s) + collect(DISTINCT ph) + 
-                       collect(DISTINCT w) + collect(DISTINCT pw) + collect(DISTINCT m) + 
-                       collect(DISTINCT pm) + collect(DISTINCT g) as allNodes,
-                       collect(DISTINCT {source: id(t), target: id(s), type: 'SECTION_PART_OF_TEXT'}) +
-                       collect(DISTINCT {source: id(s), target: id(ph), type: 'PHRASE_IN_SECTION'}) +
-                       collect(DISTINCT {source: id(s), target: id(w), type: 'SECTION_CONTAINS'}) +
-                       collect(DISTINCT {source: id(ph), target: id(pw), type: 'PHRASE_COMPOSED_OF', order: r.Order}) +
-                       collect(DISTINCT {source: id(w), target: id(m), type: 'WORD_MADE_OF'}) +
-                       collect(DISTINCT {source: id(pw), target: id(pm), type: 'WORD_MADE_OF'}) +
-                       collect(DISTINCT {source: id(g), target: id(analyzed), type: 'ANALYZES'}) as allEdges
+                // Get all relationships between these nodes
+                WITH collect(DISTINCT t) as texts,
+                     collect(DISTINCT s) as sections,
+                     collect(DISTINCT ph) as phrases,
+                     collect(DISTINCT w) as words,
+                     collect(DISTINCT m) as morphemes,
+                     collect(DISTINCT g) as glosses
+                
+                // Collect all nodes into one list
+                WITH texts + sections + phrases + words + morphemes + glosses as allNodes
+                
+                UNWIND allNodes as node
+                WITH collect(DISTINCT node) as uniqueNodes
+                
+                // Now get relationships between these nodes
+                UNWIND uniqueNodes as n1
+                OPTIONAL MATCH (n1)-[r]->(n2)
+                WHERE n2 IN uniqueNodes
+                
+                WITH uniqueNodes,
+                     collect(DISTINCT {
+                         source: id(startNode(r)), 
+                         target: id(endNode(r)), 
+                         type: type(r)
+                     }) as edges
+                
+                RETURN uniqueNodes as allNodes,
+                       [edge IN edges WHERE edge.source IS NOT NULL AND edge.target IS NOT NULL] as allEdges
             """
             params = {"limit": limit}
 
