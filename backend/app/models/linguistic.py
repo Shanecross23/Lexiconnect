@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import List, Optional
 from enum import Enum
 
@@ -170,16 +170,18 @@ class MorphemeSearchQuery(BaseModel):
     gloss: Optional[str] = None
     type: Optional[MorphemeType] = None
     language: Optional[str] = None
-    limit: int = 50
+    limit: int = Field(50, ge=1, le=200)
+    offset: int = Field(0, ge=0)
 
 
 class WordSearchQuery(BaseModel):
     surface_form: Optional[str] = None
     gloss: Optional[str] = None
     pos: Optional[str] = None
-    contains_morpheme: Optional[str] = None
     language: Optional[str] = None
-    limit: int = 50
+    contains_morpheme: Optional[str] = None
+    limit: int = Field(50, ge=1, le=200)
+    offset: int = Field(0, ge=0)
 
 
 class ConcordanceQuery(BaseModel):

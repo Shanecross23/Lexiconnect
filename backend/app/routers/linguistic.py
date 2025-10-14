@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Response, Query
 from typing import List, Optional, Any
 from app.database import get_db_dependency
 from app.models.linguistic import (
@@ -261,10 +261,10 @@ async def _store_gloss(target_id: str, annotation: str, gloss_type: str, db):
 
 
 @router.post("/search/words", response_model=List[WordResponse])
-async def search_words(query: WordSearchQuery, db=Depends(get_db_dependency)):
+async def search_words(query: WordSearchQuery, response: Response, db=Depends(get_db_dependency)):
     """Search for words based on various criteria"""
     try:
-        cypher_query = "MATCH (w:Word)"
+        base = ["MATCH (w:Word)"]
         params = {}
         conditions = []
 
@@ -285,30 +285,34 @@ async def search_words(query: WordSearchQuery, db=Depends(get_db_dependency)):
             params["language"] = query.language
 
         if query.contains_morpheme:
-            cypher_query += " MATCH (w)-[:WORD_MADE_OF]->(m:Morpheme)"
-            conditions.append(
-                "(m.surface_form CONTAINS $morpheme OR m.citation_form CONTAINS $morpheme)"
-            )
+            base.append("MATCH (w)-[:WORD_MADE_OF]->(m:Morpheme)")
+            conditions.append("(m.surface_form CONTAINS $morpheme OR m.citation_form CONTAINS $morpheme)")
             params["morpheme"] = query.contains_morpheme
 
-        if conditions:
-            cypher_query += " WHERE " + " AND ".join(conditions)
+        where_clause = " WHERE " + " AND ".join(conditions) if conditions else ""
 
-        cypher_query += """
-            OPTIONAL MATCH (w)-[:WORD_MADE_OF]->(m:Morpheme)
+        count_cypher = "".join(base) + where_clause + " RETURN count(DISTINCT w) AS total"
+        total = db.run(count_cypher, **params).single()["total"]
+
+        cypher_query = "".join(base) + where_clause + """
+            OPTIONAL MATCH (w)-[:WORD_MADE_OF]->(m2:Morpheme)
+            WITH w, COUNT(m2) AS morpheme_count
             RETURN w.ID as ID, w.surface_form as surface_form,
                    w.gloss as gloss, w.pos as pos, w.language as language,
-                   COUNT(m) as morpheme_count, toString(w.created_at) as created_at
+                   morpheme_count, toString(w.created_at) as created_at
             ORDER BY w.surface_form
+            SKIP $offset
             LIMIT $limit
         """
-        params["limit"] = query.limit
+        params.update({"limit": query.limit, "offset": query.offset})
 
         result = db.run(cypher_query, **params)
-        words = []
-        for record in result:
-            record_dict: Any = dict(record)
-            words.append(WordResponse(**record_dict))
+        words = [WordResponse(**dict(record)) for record in result]
+
+        response.headers["X-Total-Count"] = str(total)
+        response.headers["X-Limit"] = str(query.limit)
+        response.headers["X-Offset"] = str(query.offset)
+
         return words
 
     except Exception as e:
@@ -316,10 +320,10 @@ async def search_words(query: WordSearchQuery, db=Depends(get_db_dependency)):
 
 
 @router.post("/search/morphemes", response_model=List[MorphemeResponse])
-async def search_morphemes(query: MorphemeSearchQuery, db=Depends(get_db_dependency)):
+async def search_morphemes(query: MorphemeSearchQuery, response: Response, db=Depends(get_db_dependency)):
     """Search for morphemes based on various criteria"""
     try:
-        cypher_query = "MATCH (m:Morpheme)"
+        base = ["MATCH (m:Morpheme)"]
         params = {}
         conditions = []
 
@@ -343,24 +347,29 @@ async def search_morphemes(query: MorphemeSearchQuery, db=Depends(get_db_depende
             conditions.append("m.language = $language")
             params["language"] = query.language
 
-        if conditions:
-            cypher_query += " WHERE " + " AND ".join(conditions)
+        where_clause = " WHERE " + " AND ".join(conditions) if conditions else ""
 
-        cypher_query += """
+        count_cypher = "".join(base) + where_clause + " RETURN count(DISTINCT m) AS total"
+        total = db.run(count_cypher, **params).single()["total"]
+
+        cypher_query = "".join(base) + where_clause + """
             RETURN m.ID as ID, m.type as type,
                    m.surface_form as surface_form, m.citation_form as citation_form,
                    m.gloss as gloss, m.msa as msa, m.language as language,
                    toString(m.created_at) as created_at
             ORDER BY m.citation_form
+            SKIP $offset
             LIMIT $limit
         """
-        params["limit"] = query.limit
+        params.update({"limit": query.limit, "offset": query.offset})
 
         result = db.run(cypher_query, **params)
-        morphemes = []
-        for record in result:
-            record_dict: Any = dict(record)
-            morphemes.append(MorphemeResponse(**record_dict))
+        morphemes = [MorphemeResponse(**dict(record)) for record in result]
+
+        response.headers["X-Total-Count"] = str(total)
+        response.headers["X-Limit"] = str(query.limit)
+        response.headers["X-Offset"] = str(query.offset)
+
         return morphemes
 
     except Exception as e:
@@ -372,10 +381,20 @@ async def get_texts(
     language: Optional[str] = None,
     skip: int = 0,
     limit: int = 50,
+    response: Response = None,
     db=Depends(get_db_dependency),
 ):
     """Get list of interlinear texts"""
     try:
+        total = db.run(
+            """
+            MATCH (t:Text)
+            WHERE ($language IS NULL OR t.language_code = $language)
+            RETURN count(t) AS total
+            """,
+            language=language,
+        ).single()["total"]
+
         cypher_query = """
             MATCH (t:Text)
             WHERE ($language IS NULL OR t.language_code = $language)
@@ -383,22 +402,29 @@ async def get_texts(
             OPTIONAL MATCH (s)-[:SECTION_CONTAINS]->(w:Word)
             OPTIONAL MATCH (w)-[:WORD_MADE_OF]->(m:Morpheme)
             WITH t, 
-                 COUNT(DISTINCT s) as section_count,
-                 COUNT(DISTINCT w) as word_count,
-                 COUNT(DISTINCT m) as morpheme_count
-            RETURN t.ID as ID, t.title as title, t.source as source,
-                   t.comment as comment, t.language_code as language_code,
-                   section_count, word_count, morpheme_count,
-                   toString(t.created_at) as created_at
-            ORDER BY t.created_at DESC
-            SKIP $skip LIMIT $limit
+                 COUNT(DISTINCT s) AS section_count,
+                 COUNT(DISTINCT w) AS word_count,
+                 COUNT(DISTINCT m) AS morpheme_count
+            RETURN
+              COALESCE(t.ID, toString(id(t)))                     AS ID,
+              COALESCE(t.title, '')                               AS title,
+              COALESCE(t.source, '')                              AS source,
+              COALESCE(t.comment, '')                             AS comment,
+              COALESCE(t.language_code, '')                       AS language_code,
+              section_count, word_count, morpheme_count,
+              toString(COALESCE(t.created_at, datetime()))        AS created_at
+            ORDER BY COALESCE(t.created_at, datetime()) DESC
+            SKIP $skip
+            LIMIT $limit
         """
-
         result = db.run(cypher_query, language=language, skip=skip, limit=limit)
-        texts = []
-        for record in result:
-            record_dict: Any = dict(record)
-            texts.append(InterlinearTextResponse(**record_dict))
+
+        texts = [InterlinearTextResponse(**dict(record)) for record in result]
+
+        response.headers["X-Total-Count"] = str(total)
+        response.headers["X-Limit"] = str(limit)
+        response.headers["X-Offset"] = str(skip)
+
         return texts
 
     except Exception as e:
@@ -454,7 +480,7 @@ async def get_schema_visualization(db=Depends(get_db_dependency)):
 
 @router.get("/graph-data")
 async def get_graph_data(
-    text_id: Optional[str] = None, limit: int = 100, db=Depends(get_db_dependency)
+    text_id: Optional[str] = None, limit: int = 50, db=Depends(get_db_dependency)
 ):
     """Get graph data for visualization with nodes and edges"""
     try:
