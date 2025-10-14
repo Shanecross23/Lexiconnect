@@ -261,7 +261,9 @@ async def _store_gloss(target_id: str, annotation: str, gloss_type: str, db):
 
 
 @router.post("/search/words", response_model=List[WordResponse])
-async def search_words(query: WordSearchQuery, response: Response, db=Depends(get_db_dependency)):
+async def search_words(
+    query: WordSearchQuery, response: Response, db=Depends(get_db_dependency)
+):
     """Search for words based on various criteria"""
     try:
         base = ["MATCH (w:Word)"]
@@ -286,15 +288,22 @@ async def search_words(query: WordSearchQuery, response: Response, db=Depends(ge
 
         if query.contains_morpheme:
             base.append("MATCH (w)-[:WORD_MADE_OF]->(m:Morpheme)")
-            conditions.append("(m.surface_form CONTAINS $morpheme OR m.citation_form CONTAINS $morpheme)")
+            conditions.append(
+                "(m.surface_form CONTAINS $morpheme OR m.citation_form CONTAINS $morpheme)"
+            )
             params["morpheme"] = query.contains_morpheme
 
         where_clause = " WHERE " + " AND ".join(conditions) if conditions else ""
 
-        count_cypher = "".join(base) + where_clause + " RETURN count(DISTINCT w) AS total"
+        count_cypher = (
+            "".join(base) + where_clause + " RETURN count(DISTINCT w) AS total"
+        )
         total = db.run(count_cypher, **params).single()["total"]
 
-        cypher_query = "".join(base) + where_clause + """
+        cypher_query = (
+            "".join(base)
+            + where_clause
+            + """
             OPTIONAL MATCH (w)-[:WORD_MADE_OF]->(m2:Morpheme)
             WITH w, COUNT(m2) AS morpheme_count
             RETURN w.ID as ID, w.surface_form as surface_form,
@@ -304,6 +313,7 @@ async def search_words(query: WordSearchQuery, response: Response, db=Depends(ge
             SKIP $offset
             LIMIT $limit
         """
+        )
         params.update({"limit": query.limit, "offset": query.offset})
 
         result = db.run(cypher_query, **params)
@@ -320,7 +330,9 @@ async def search_words(query: WordSearchQuery, response: Response, db=Depends(ge
 
 
 @router.post("/search/morphemes", response_model=List[MorphemeResponse])
-async def search_morphemes(query: MorphemeSearchQuery, response: Response, db=Depends(get_db_dependency)):
+async def search_morphemes(
+    query: MorphemeSearchQuery, response: Response, db=Depends(get_db_dependency)
+):
     """Search for morphemes based on various criteria"""
     try:
         base = ["MATCH (m:Morpheme)"]
@@ -349,10 +361,15 @@ async def search_morphemes(query: MorphemeSearchQuery, response: Response, db=De
 
         where_clause = " WHERE " + " AND ".join(conditions) if conditions else ""
 
-        count_cypher = "".join(base) + where_clause + " RETURN count(DISTINCT m) AS total"
+        count_cypher = (
+            "".join(base) + where_clause + " RETURN count(DISTINCT m) AS total"
+        )
         total = db.run(count_cypher, **params).single()["total"]
 
-        cypher_query = "".join(base) + where_clause + """
+        cypher_query = (
+            "".join(base)
+            + where_clause
+            + """
             RETURN m.ID as ID, m.type as type,
                    m.surface_form as surface_form, m.citation_form as citation_form,
                    m.gloss as gloss, m.msa as msa, m.language as language,
@@ -361,6 +378,7 @@ async def search_morphemes(query: MorphemeSearchQuery, response: Response, db=De
             SKIP $offset
             LIMIT $limit
         """
+        )
         params.update({"limit": query.limit, "offset": query.offset})
 
         result = db.run(cypher_query, **params)
@@ -478,11 +496,57 @@ async def get_schema_visualization(db=Depends(get_db_dependency)):
         raise HTTPException(status_code=400, detail=str(e))
 
 
+@router.get("/graph-filters")
+async def get_graph_filters(db=Depends(get_db_dependency)):
+    """Get available filter options for graph visualization"""
+    try:
+        # Get available texts
+        texts_query = """
+            MATCH (t:Text)
+            RETURN t.ID as id, 
+                   COALESCE(t.title, t.ID, 'Untitled') as title,
+                   t.language_code as language
+            ORDER BY t.title
+            LIMIT 50
+        """
+        texts_result = db.run(texts_query)
+        texts = [dict(record) for record in texts_result]
+
+        # Get available languages
+        languages_query = """
+            MATCH (t:Text)
+            WHERE t.language_code IS NOT NULL
+            RETURN DISTINCT t.language_code as code
+            ORDER BY code
+        """
+        lang_result = db.run(languages_query)
+        languages = [record["code"] for record in lang_result if record["code"]]
+
+        return {
+            "texts": texts,
+            "languages": languages,
+            "node_types": ["Text", "Section", "Phrase", "Word", "Morpheme", "Gloss"],
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @router.get("/graph-data")
 async def get_graph_data(
-    text_id: Optional[str] = None, limit: int = 50, db=Depends(get_db_dependency)
+    text_id: Optional[str] = None,
+    language: Optional[str] = None,
+    node_types: Optional[str] = None,  # Comma-separated: "Text,Word,Gloss"
+    limit: int = 50,
+    db=Depends(get_db_dependency),
 ):
-    """Get graph data for visualization with nodes and edges"""
+    """Get graph data for visualization with nodes and edges
+
+    Args:
+        text_id: Filter to specific text (shows all related nodes)
+        language: Filter by language code
+        node_types: Comma-separated node types to include (e.g. "Word,Gloss,Morpheme")
+        limit: Max nodes per type (default 50)
+    """
     try:
         nodes = []
         edges = []
@@ -518,40 +582,60 @@ async def get_graph_data(
             """
             params = {"text_id": text_id}
         else:
-            # Get a sample from the entire database
-            cypher_query = """
-                // Sample different node types from across the database
-                CALL {
-                    MATCH (t:Text) RETURN t LIMIT 3
-                }
-                CALL {
-                    MATCH (s:Section) RETURN s LIMIT 10
-                }
-                CALL {
-                    MATCH (ph:Phrase) RETURN ph LIMIT 20
-                }
-                CALL {
-                    MATCH (w:Word) 
-                    RETURN w 
-                    LIMIT $limit
-                }
-                CALL {
-                    MATCH (m:Morpheme) RETURN m LIMIT 30
-                }
-                CALL {
-                    MATCH (g:Gloss) RETURN g LIMIT 40
-                }
+            # Parse node types filter
+            allowed_types = set()
+            if node_types:
+                allowed_types = set(t.strip() for t in node_types.split(","))
+
+            # Build query parts based on filters
+            query_parts = []
+
+            if not node_types or "Text" in allowed_types:
+                lang_filter = "WHERE t.language_code = $language" if language else ""
+                query_parts.append(f"CALL {{ MATCH (t:Text) {lang_filter} RETURN t }}")
+
+            if not node_types or "Section" in allowed_types:
+                query_parts.append("CALL { MATCH (s:Section) RETURN s LIMIT 10 }")
+
+            if not node_types or "Phrase" in allowed_types:
+                query_parts.append("CALL { MATCH (ph:Phrase) RETURN ph LIMIT 20 }")
+
+            if not node_types or "Word" in allowed_types:
+                lang_filter = "WHERE w.language = $language" if language else ""
+                query_parts.append(
+                    f"CALL {{ MATCH (w:Word) {lang_filter} RETURN w LIMIT $limit }}"
+                )
+
+            if not node_types or "Morpheme" in allowed_types:
+                lang_filter = "WHERE m.language = $language" if language else ""
+                query_parts.append(
+                    f"CALL {{ MATCH (m:Morpheme) {lang_filter} RETURN m LIMIT 30 }}"
+                )
+
+            if not node_types or "Gloss" in allowed_types:
+                query_parts.append("CALL { MATCH (g:Gloss) RETURN g LIMIT 40 }")
+
+            # Collect node variables
+            node_vars = []
+            if not node_types or "Text" in allowed_types:
+                node_vars.append("collect(DISTINCT t)")
+            if not node_types or "Section" in allowed_types:
+                node_vars.append("collect(DISTINCT s)")
+            if not node_types or "Phrase" in allowed_types:
+                node_vars.append("collect(DISTINCT ph)")
+            if not node_types or "Word" in allowed_types:
+                node_vars.append("collect(DISTINCT w)")
+            if not node_types or "Morpheme" in allowed_types:
+                node_vars.append("collect(DISTINCT m)")
+            if not node_types or "Gloss" in allowed_types:
+                node_vars.append("collect(DISTINCT g)")
+
+            cypher_query = (
+                "\n".join(query_parts)
+                + f"""
                 
                 // Get all relationships between these nodes
-                WITH collect(DISTINCT t) as texts,
-                     collect(DISTINCT s) as sections,
-                     collect(DISTINCT ph) as phrases,
-                     collect(DISTINCT w) as words,
-                     collect(DISTINCT m) as morphemes,
-                     collect(DISTINCT g) as glosses
-                
-                // Collect all nodes into one list
-                WITH texts + sections + phrases + words + morphemes + glosses as allNodes
+                WITH {" + ".join(node_vars)} as allNodes
                 
                 UNWIND allNodes as node
                 WITH collect(DISTINCT node) as uniqueNodes
@@ -562,16 +646,17 @@ async def get_graph_data(
                 WHERE n2 IN uniqueNodes
                 
                 WITH uniqueNodes,
-                     collect(DISTINCT {
+                     collect(DISTINCT {{
                          source: id(startNode(r)), 
                          target: id(endNode(r)), 
                          type: type(r)
-                     }) as edges
+                     }}) as edges
                 
                 RETURN uniqueNodes as allNodes,
                        [edge IN edges WHERE edge.source IS NOT NULL AND edge.target IS NOT NULL] as allEdges
             """
-            params = {"limit": limit}
+            )
+            params = {"limit": limit, "language": language}
 
         result = db.run(cypher_query, **params)
         record = result.single()
@@ -600,11 +685,19 @@ async def get_graph_data(
             "Gloss": 7,
         }
 
-        # Process nodes
+        # Process nodes (track seen IDs to avoid duplicates)
         all_nodes = record["allNodes"]
+        seen_node_ids = set()
+
         for node in all_nodes:
             if node is None:
                 continue
+
+            # Skip duplicates
+            node_id = str(node.id)
+            if node_id in seen_node_ids:
+                continue
+            seen_node_ids.add(node_id)
 
             labels = list(node.labels)
             if not labels:
@@ -632,7 +725,7 @@ async def get_graph_data(
 
             nodes.append(
                 {
-                    "id": str(node.id),
+                    "id": node_id,
                     "label": label_text,
                     "type": node_type,
                     "color": node_colors.get(node_type, "#64748b"),

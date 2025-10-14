@@ -10,11 +10,28 @@ import {
 import { MultiDirectedGraph } from "graphology";
 import forceAtlas2 from "graphology-layout-forceatlas2";
 import "@react-sigma/core/lib/react-sigma.min.css";
+import GraphFilters from "./GraphFilters";
 
 // Fetch graph data from API
-async function fetchGraphData() {
+async function fetchGraphData(filters?: {
+  textId?: string;
+  language?: string;
+  nodeTypes?: string[];
+  limit?: number;
+}) {
   try {
-    const response = await fetch("/api/v1/linguistic/graph-data");
+    const params = new URLSearchParams();
+    if (filters?.textId) params.append("text_id", filters.textId);
+    if (filters?.language) params.append("language", filters.language);
+    if (filters?.nodeTypes && filters.nodeTypes.length > 0) {
+      params.append("node_types", filters.nodeTypes.join(","));
+    }
+    if (filters?.limit) params.append("limit", filters.limit.toString());
+
+    const url = `/api/v1/linguistic/graph-data${
+      params.toString() ? `?${params.toString()}` : ""
+    }`;
+    const response = await fetch(url);
     if (!response.ok) {
       throw new Error("Failed to fetch graph data");
     }
@@ -33,6 +50,12 @@ function buildGraphFromData(data: any) {
   // Add nodes with initial random positions
   if (data.nodes && data.nodes.length > 0) {
     data.nodes.forEach((node: any) => {
+      // Skip if node already exists (avoid duplicates)
+      if (graph.hasNode(node.id)) {
+        console.warn(`Duplicate node detected: ${node.id}`);
+        return;
+      }
+
       graph.addNode(node.id, {
         label: node.label || node.id,
         size: node.size || 10,
@@ -91,21 +114,21 @@ function buildGraphFromData(data: any) {
   return graph;
 }
 
-function LoadGraph() {
+function LoadGraph({ filters }: { filters?: any }) {
   const loadGraph = useLoadGraph();
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
     const loadData = async () => {
       setIsLoading(true);
-      const data = await fetchGraphData();
+      const data = await fetchGraphData(filters);
       const graph = buildGraphFromData(data);
       loadGraph(graph);
       setIsLoading(false);
     };
 
     loadData();
-  }, [loadGraph]);
+  }, [loadGraph, filters]);
 
   return null;
 }
@@ -229,13 +252,22 @@ function GraphEvents() {
 
 export default function GraphVisualization() {
   const [refreshKey, setRefreshKey] = useState(0);
+  const [filters, setFilters] = useState<any>(undefined);
 
   const handleRefresh = () => {
     setRefreshKey((prev) => prev + 1);
   };
 
+  const handleFilterChange = (newFilters: any) => {
+    setFilters(newFilters);
+    setRefreshKey((prev) => prev + 1);
+  };
+
   return (
     <div className="w-full h-full relative">
+      {/* Filter Panel */}
+      <GraphFilters onFilterChange={handleFilterChange} />
+
       {/* Refresh button */}
       <button
         onClick={handleRefresh}
@@ -273,7 +305,7 @@ export default function GraphVisualization() {
           zIndex: true,
         }}
       >
-        <LoadGraph />
+        <LoadGraph filters={filters} />
         <GraphEvents />
       </SigmaContainer>
     </div>
