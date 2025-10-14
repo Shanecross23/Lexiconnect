@@ -564,14 +564,14 @@ async def get_graph_data(
             "Gloss": "#ec4899",  # pink
         }
 
-        # Define sizes for each node type
+        # Define sizes for each node type (larger = more important in hierarchy)
         node_sizes = {
-            "Text": 25,
-            "Section": 20,
-            "Phrase": 18,
-            "Word": 15,
-            "Morpheme": 12,
-            "Gloss": 10,
+            "Text": 30,
+            "Section": 22,
+            "Phrase": 16,
+            "Word": 8,
+            "Morpheme": 6,
+            "Gloss": 7,
         }
 
         # Process nodes

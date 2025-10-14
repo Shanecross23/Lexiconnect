@@ -8,6 +8,7 @@ import {
   useSigma,
 } from "@react-sigma/core";
 import { MultiDirectedGraph } from "graphology";
+import forceAtlas2 from "graphology-layout-forceatlas2";
 import "@react-sigma/core/lib/react-sigma.min.css";
 
 // Fetch graph data from API
@@ -29,7 +30,7 @@ async function fetchGraphData() {
 function buildGraphFromData(data: any) {
   const graph = new MultiDirectedGraph();
 
-  // Add nodes
+  // Add nodes with initial random positions
   if (data.nodes && data.nodes.length > 0) {
     data.nodes.forEach((node: any) => {
       graph.addNode(node.id, {
@@ -68,6 +69,22 @@ function buildGraphFromData(data: any) {
       nodeType: "Empty",
       x: 50,
       y: 50,
+    });
+  }
+
+  // Apply ForceAtlas2 layout for better positioning
+  if (graph.order > 0) {
+    const settings = forceAtlas2.inferSettings(graph);
+    forceAtlas2.assign(graph, {
+      iterations: 100,
+      settings: {
+        ...settings,
+        gravity: 1,
+        scalingRatio: 10,
+        strongGravityMode: false,
+        barnesHutOptimize: true,
+        slowDown: 5,
+      },
     });
   }
 
@@ -245,11 +262,15 @@ export default function GraphVisualization() {
           renderEdgeLabels: false,
           defaultNodeColor: "#0ea5e9",
           defaultEdgeColor: "#94a3b8",
-          labelSize: 12,
-          labelWeight: "bold",
+          labelSize: 10,
+          labelWeight: "normal",
           labelColor: { color: "#1e293b" },
+          labelRenderedSizeThreshold: 8,
+          labelDensity: 0.5,
+          labelGridCellSize: 100,
           enableEdgeEvents: true,
           allowInvalidContainer: true,
+          zIndex: true,
         }}
       >
         <LoadGraph />
