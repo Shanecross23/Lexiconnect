@@ -27,6 +27,7 @@ export default function GraphFilters({ onFilterChange }: GraphFiltersProps) {
     new Set()
   );
   const [limit, setLimit] = useState<number>(50);
+  const [hierarchyLevel, setHierarchyLevel] = useState<string>("all");
   const [isOpen, setIsOpen] = useState(false);
 
   useEffect(() => {
@@ -46,11 +47,39 @@ export default function GraphFilters({ onFilterChange }: GraphFiltersProps) {
   };
 
   const handleApplyFilters = () => {
+    // Handle hierarchy level filtering
+    let nodeTypes =
+      selectedNodeTypes.size > 0 ? Array.from(selectedNodeTypes) : undefined;
+
+    // If hierarchy level is set, override node types
+    if (hierarchyLevel !== "all") {
+      switch (hierarchyLevel) {
+        case "high":
+          nodeTypes = ["Text", "Section"];
+          break;
+        case "medium":
+          nodeTypes = ["Text", "Section", "Phrase"];
+          break;
+        case "detailed":
+          nodeTypes = ["Text", "Section", "Phrase", "Word"];
+          break;
+        case "full":
+          nodeTypes = [
+            "Text",
+            "Section",
+            "Phrase",
+            "Word",
+            "Morpheme",
+            "Gloss",
+          ];
+          break;
+      }
+    }
+
     onFilterChange({
       textId: selectedText || undefined,
       language: selectedLanguage || undefined,
-      nodeTypes:
-        selectedNodeTypes.size > 0 ? Array.from(selectedNodeTypes) : undefined,
+      nodeTypes: nodeTypes,
       limit,
     });
   };
@@ -60,6 +89,7 @@ export default function GraphFilters({ onFilterChange }: GraphFiltersProps) {
     setSelectedLanguage("");
     setSelectedNodeTypes(new Set());
     setLimit(50);
+    setHierarchyLevel("all");
     onFilterChange({ limit: 50 });
   };
 
@@ -152,6 +182,27 @@ export default function GraphFilters({ onFilterChange }: GraphFiltersProps) {
                 </option>
               ))}
             </select>
+          </div>
+
+          {/* Hierarchy Level */}
+          <div>
+            <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
+              Detail Level
+            </label>
+            <select
+              value={hierarchyLevel}
+              onChange={(e) => setHierarchyLevel(e.target.value)}
+              className="w-full px-3 py-2 text-sm bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-600 rounded-md text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+            >
+              <option value="all">Custom Selection</option>
+              <option value="high">High Level (Text, Sections)</option>
+              <option value="medium">Medium (+ Phrases)</option>
+              <option value="detailed">Detailed (+ Words)</option>
+              <option value="full">Full Detail (All Types)</option>
+            </select>
+            <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+              For complex texts like btz1, try "High Level" or "Medium" first
+            </p>
           </div>
 
           {/* Node Types */}
