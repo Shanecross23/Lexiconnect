@@ -761,3 +761,51 @@ async def get_graph_data(
         raise HTTPException(
             status_code=400, detail=f"Error fetching graph data: {str(e)}"
         )
+
+
+@router.delete("/wipe-database")
+async def wipe_database(db=Depends(get_db_dependency)):
+    """Wipe all linguistic data from the database
+
+    WARNING: This will permanently delete all texts, sections, phrases, words,
+    morphemes, and glosses from the database. This action cannot be undone.
+    """
+    try:
+        # Delete all nodes and relationships in the correct order to avoid constraint violations
+        wipe_queries = [
+            # Delete all relationships first
+            "MATCH ()-[r]-() DELETE r",
+            # Delete all nodes
+            "MATCH (n) DELETE n",
+        ]
+
+        deleted_counts = {}
+
+        # Get counts before deletion for reporting
+        count_queries = {
+            "texts": "MATCH (t:Text) RETURN count(t) as count",
+            "sections": "MATCH (s:Section) RETURN count(s) as count",
+            "phrases": "MATCH (p:Phrase) RETURN count(p) as count",
+            "words": "MATCH (w:Word) RETURN count(w) as count",
+            "morphemes": "MATCH (m:Morpheme) RETURN count(m) as count",
+            "glosses": "MATCH (g:Gloss) RETURN count(g) as count",
+            "relationships": "MATCH ()-[r]-() RETURN count(r) as count",
+        }
+
+        for entity_type, query in count_queries.items():
+            result = db.run(query)
+            record = result.single()
+            deleted_counts[entity_type] = record["count"] if record else 0
+
+        # Execute wipe queries
+        for query in wipe_queries:
+            db.run(query)
+
+        return {
+            "message": "Database wiped successfully",
+            "deleted_counts": deleted_counts,
+            "warning": "All linguistic data has been permanently deleted",
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error wiping database: {str(e)}")
