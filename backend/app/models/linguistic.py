@@ -1,6 +1,16 @@
-from pydantic import BaseModel, Field
-from typing import List, Optional
+from datetime import datetime
 from enum import Enum
+from typing import List, Optional, Dict, Tuple, Union
+
+from pydantic import BaseModel, Field, ConfigDict, conint, confloat, model_validator
+
+
+class BaseSchema(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+
+class IdSchema(BaseSchema):
+    id: str = Field(alias="ID")
 
 
 class MorphemeType(str, Enum):
@@ -10,6 +20,9 @@ class MorphemeType(str, Enum):
     INFIX = "infix"
     CIRCUMFIX = "circumfix"
     ROOT = "root"
+    CLITIC = "clitic"
+    REDUP = "redup"
+    OTHER = "other"
 
 
 class ItemType(str, Enum):
@@ -26,218 +39,229 @@ class ItemType(str, Enum):
     HN = "hn"  # homonym number
 
 
-# Base models for linguistic entities
-class LinguisticItem(BaseModel):
-    type: ItemType
-    lang: str
-    text: str
+class GlossTarget(str, Enum):
+    WORD = "word"
+    PHRASE = "phrase"
+    MORPHEME = "morpheme"
 
 
-class MorphemeCreate(BaseModel):
-    ID: str  # Using ID to match schema
+class RelationType(str, Enum):
+    ALLOMORPH = "allomorph"
+    COGNATE = "cognate"
+    VARIANT = "variant"
+
+
+class FrequencyItem(str, Enum):
+    WORD = "word"
+    MORPHEME = "morpheme"
+    POS = "pos"
+
+
+# Create models
+class MorphemeCreate(IdSchema):
     type: MorphemeType
     surface_form: str = ""
     citation_form: str = ""
     gloss: str = ""
-    msa: str = ""
+    msa: Union[Dict[str, str], List[str], str] = ""
     language: str
 
 
-class MorphemeResponse(BaseModel):
-    ID: str
+class WordCreate(IdSchema):
+    surface_form: str
+    gloss: str = ""
+    pos: List[str] = Field(default_factory=list)
+    morphemes: List[MorphemeCreate] = Field(default_factory=list)
+    language: str
+
+
+class PhraseCreate(IdSchema):
+    segnum: str = ""
+    surface_text: str = ""
+    words: List[WordCreate] = Field(default_factory=list)
+    language: str
+    order: conint(ge=0) = 0
+
+
+class SectionCreate(IdSchema):
+    order: conint(ge=0) = 0
+    phrases: List[PhraseCreate] = Field(default_factory=list)
+    # If you truly allow words-at-section, ensure phrases==[] when words!=[]
+    words: List[WordCreate] = Field(default_factory=list)
+
+
+class GlossCreate(IdSchema):
+    annotation: str
+    gloss_type: GlossTarget = GlossTarget.WORD
+    target_id: str  # the id of the word/phrase/morpheme
+    language: str = "en"
+
+
+class InterlinearTextCreate(IdSchema):
+    title: str
+    source: str = ""
+    comment: str = ""
+    language: str
+    sections: List[SectionCreate] = Field(default_factory=list)
+    paragraphs: List["ParagraphCreate"] = Field(
+        default_factory=list
+    )  # if keeping legacy
+
+
+# Response models
+class MorphemeResponse(IdSchema):
     type: MorphemeType
     surface_form: str
     citation_form: str
     gloss: str
-    msa: str
+    msa: Union[Dict[str, str], List[str], str]
     language: str
-    created_at: str
+    created_at: datetime
 
 
-class WordCreate(BaseModel):
-    ID: str  # Using ID to match schema
-    surface_form: str
-    gloss: str = ""
-    pos: str = ""
-    morphemes: List[MorphemeCreate] = []
-    language: str
-
-
-class WordResponse(BaseModel):
-    ID: str
+class WordResponse(IdSchema):
     surface_form: str
     gloss: str
-    pos: str
+    pos: List[str]
     language: str
     morpheme_count: int
-    created_at: str
+    created_at: datetime
 
 
-class PhraseCreate(BaseModel):
-    ID: str  # Using ID to match schema
-    segnum: str = ""
-    surface_text: str = ""
-    words: List[WordCreate] = []
-    language: str
-    order: int = 0  # For PHRASE_COMPOSED_OF relationship
-
-
-class PhraseResponse(BaseModel):
-    ID: str
+class PhraseResponse(IdSchema):
     segnum: str
     surface_text: str
     language: str
     word_count: int
-    created_at: str
+    created_at: datetime
 
 
-class GlossCreate(BaseModel):
-    """Gloss annotation model aligned with DATABASE.md schema"""
-
-    ID: str
-    annotation: str  # The gloss text/annotation
-    gloss_type: str = "word"  # "word", "phrase", or "morpheme"
-    language: str = "en"  # Language of the gloss
-
-
-class GlossResponse(BaseModel):
-    ID: str
-    annotation: str
-    gloss_type: str
-    language: str
-    created_at: str
-
-
-class SectionCreate(BaseModel):
-    """Section model aligned with DATABASE.md schema"""
-
-    ID: str  # Using ID to match schema
-    order: int = 0
-    phrases: List[PhraseCreate] = []
-    words: List[WordCreate] = []  # Sections can contain words directly
-
-
-class SectionResponse(BaseModel):
-    ID: str
+class SectionResponse(IdSchema):
     order: int
     phrase_count: int
     word_count: int
-    created_at: str
+    created_at: datetime
 
 
-# Keep Paragraph models for backward compatibility during transition
-class ParagraphCreate(BaseModel):
-    guid: str
-    order: int
-    phrases: List[PhraseCreate] = []
+class GlossResponse(IdSchema):
+    annotation: str
+    gloss_type: GlossTarget
+    language: str
+    created_at: datetime
 
 
-class ParagraphResponse(BaseModel):
-    id: str
-    guid: str
-    order: int
-    phrase_count: int
-    created_at: str
-
-
-class InterlinearTextCreate(BaseModel):
-    ID: str  # Using ID to match schema
-    title: str
-    source: str = ""
-    comment: str = ""
-    language_code: str
-    sections: List[SectionCreate] = []
-    # Keep for backward compatibility during transition
-    paragraphs: List[ParagraphCreate] = []
-
-
-class InterlinearTextResponse(BaseModel):
-    ID: str
+class InterlinearTextResponse(IdSchema):
     title: str
     source: str
     comment: str
-    language_code: str
+    language: str
     section_count: int
     word_count: int
     morpheme_count: int
-    created_at: str
+    created_at: datetime
 
 
-# Search and analysis models
-class MorphemeSearchQuery(BaseModel):
+# Keep Paragraph models for backward compatibility during transition
+# Note: Parser uses guid=, but we standardize to ID for consistency
+class ParagraphCreate(BaseSchema):
+    id: str = Field(alias="ID")
+    order: conint(ge=0) = 0
+    phrases: List[PhraseCreate] = Field(default_factory=list)
+
+    # Allow 'guid' as a field name for backward compatibility with parser
+    @model_validator(mode="before")
+    @classmethod
+    def convert_guid_to_id(cls, data):
+        if (
+            isinstance(data, dict)
+            and "guid" in data
+            and "ID" not in data
+            and "id" not in data
+        ):
+            data["ID"] = data.pop("guid")
+        return data
+
+
+class ParagraphResponse(IdSchema):
+    order: int
+    phrase_count: int
+    created_at: datetime
+
+
+# Queries
+class MorphemeSearchQuery(BaseSchema):
     surface_form: Optional[str] = None
     citation_form: Optional[str] = None
     gloss: Optional[str] = None
     type: Optional[MorphemeType] = None
     language: Optional[str] = None
-    limit: int = Field(50, ge=1, le=200)
-    offset: int = Field(0, ge=0)
+    limit: conint(ge=1, le=200) = 50
+    offset: conint(ge=0) = 0
 
 
-class WordSearchQuery(BaseModel):
+class WordSearchQuery(BaseSchema):
     surface_form: Optional[str] = None
     gloss: Optional[str] = None
     pos: Optional[str] = None
     language: Optional[str] = None
     contains_morpheme: Optional[str] = None
-    limit: int = Field(50, ge=1, le=200)
-    offset: int = Field(0, ge=0)
+    limit: conint(ge=1, le=200) = 50
+    offset: conint(ge=0) = 0
 
 
-class ConcordanceQuery(BaseModel):
-    target: str  # word or morpheme to search for
-    target_type: str  # "word" or "morpheme"
-    context_size: int = 3  # number of words before/after
+class ConcordanceQuery(BaseSchema):
+    target: str
+    target_type: GlossTarget  # reuse enum for target granularity if you like
+    context_size: conint(ge=0, le=10) = 3
     language: Optional[str] = None
-    limit: int = 100
+    limit: conint(ge=1, le=500) = 100
 
 
-class ConcordanceResult(BaseModel):
+class ConcordanceResult(BaseSchema):
     target: str
     left_context: List[str]
     right_context: List[str]
     phrase_id: str
     text_title: str
     segnum: str
+    word_index: Optional[int] = None
+    token_span: Optional[Tuple[int, int]] = None
 
 
-# Frequency analysis models
-class FrequencyResult(BaseModel):
+class FrequencyQuery(BaseSchema):
+    item_type: FrequencyItem
+    language: Optional[str] = None
+    min_frequency: conint(ge=1) = 1
+    limit: conint(ge=1, le=1000) = 100
+
+
+class FrequencyResult(BaseSchema):
     item: str
     frequency: int
     percentage: float
 
 
-class FrequencyQuery(BaseModel):
-    item_type: str  # "word", "morpheme", "pos"
-    language: Optional[str] = None
-    min_frequency: int = 1
-    limit: int = 100
-
-
-# Linguistic relationship models
-class MorphemeRelation(BaseModel):
+class MorphemeRelation(BaseSchema):
     morpheme1_id: str
     morpheme2_id: str
-    relation_type: str  # "allomorph", "cognate", "variant"
-    confidence: float = 1.0
-    notes: str = ""
+    relation_type: RelationType
+    confidence: confloat(ge=0.0, le=1.0) = 1.0
+    notes: Optional[str] = None
 
 
-class LexemeCreate(BaseModel):
+class LexemeCreate(BaseSchema):
     citation_form: str
     meaning: str
-    pos: str
+    pos: List[str] = Field(default_factory=list)
     language: str
-    frequency: int = 0
+    frequency: conint(ge=0) = 0
 
 
-class LexemeResponse(BaseModel):
-    id: str
+class LexemeResponse(IdSchema):
     citation_form: str
     meaning: str
-    pos: str
+    pos: List[str]
     language: str
     frequency: int
     morpheme_count: int
-    created_at: str
+    created_at: datetime

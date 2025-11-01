@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Response, Query
 from typing import List, Optional, Any
+from pydantic import ValidationError
 from app.database import get_db_dependency
 from app.models.linguistic import (
     InterlinearTextCreate,
@@ -16,6 +17,10 @@ from app.models.linguistic import (
 from app.parsers.flextext_parser import parse_flextext_file, get_file_stats
 import tempfile
 import os
+import traceback
+import logging
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -53,14 +58,23 @@ async def upload_flextext_file(
             # Clean up temp file
             os.unlink(temp_file_path)
 
+    except ValidationError as e:
+        error_msg = f"Validation error: {e.errors()}"
+        logger.error(error_msg)
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=400, detail=error_msg)
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        error_msg = f"Error processing file: {str(e)}"
+        logger.error(error_msg)
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=400, detail=error_msg)
 
 
 async def _store_interlinear_text(text: InterlinearTextCreate, db) -> str:
     """Store an interlinear text using DATABASE.md schema relationships"""
 
     # Create the Text node with ID property (matching schema)
+    # Use MERGE directly without MATCH to avoid Cartesian products
     db.run(
         """
         MERGE (t:Text {ID: $ID})
@@ -68,27 +82,27 @@ async def _store_interlinear_text(text: InterlinearTextCreate, db) -> str:
         SET t.title = $title,
             t.source = $source,
             t.comment = $comment,
-            t.language_code = $language_code,
+            t.language = $language,
             t.updated_at = datetime()
         """,
-        ID=text.ID,
+        ID=text.id,
         title=text.title,
         source=text.source,
         comment=text.comment,
-        language_code=text.language_code,
+        language=text.language,
     )
 
     # Store sections and their components using correct relationships
     for section in text.sections:
-        await _store_section(section, text.ID, db)
+        await _store_section(section, text.id, db)
 
-    return text.ID
+    return text.id
 
 
 async def _store_section(section: SectionCreate, text_id: str, db):
     """Store a Section node with SECTION_PART_OF_TEXT relationship"""
 
-    # Create Section node
+    # Create Section node and link to Text in one query to avoid Cartesian products
     db.run(
         """
         MATCH (t:Text {ID: $text_id})
@@ -99,23 +113,23 @@ async def _store_section(section: SectionCreate, text_id: str, db):
         MERGE (t)-[:SECTION_PART_OF_TEXT]->(s)
         """,
         text_id=text_id,
-        ID=section.ID,
+        ID=section.id,
         order=section.order,
     )
 
     # Store phrases with PHRASE_IN_SECTION relationship
     for phrase in section.phrases:
-        await _store_phrase(phrase, section.ID, db)
+        await _store_phrase(phrase, section.id, db)
 
     # Store words with SECTION_CONTAINS relationship
     for word in section.words:
-        await _store_word_in_section(word, section.ID, db)
+        await _store_word_in_section(word, section.id, db)
 
 
 async def _store_phrase(phrase: PhraseCreate, section_id: str, db):
     """Store a Phrase node with PHRASE_IN_SECTION relationship"""
 
-    # Create Phrase node
+    # Create Phrase node and link to Section in one query to avoid Cartesian products
     db.run(
         """
         MATCH (s:Section {ID: $section_id})
@@ -128,7 +142,7 @@ async def _store_phrase(phrase: PhraseCreate, section_id: str, db):
         MERGE (s)-[:PHRASE_IN_SECTION]->(p)
         """,
         section_id=section_id,
-        ID=phrase.ID,
+        ID=phrase.id,
         segnum=phrase.segnum,
         surface_text=phrase.surface_text,
         language=phrase.language,
@@ -136,13 +150,16 @@ async def _store_phrase(phrase: PhraseCreate, section_id: str, db):
 
     # Store words in phrase with PHRASE_COMPOSED_OF relationship (includes Order property)
     for idx, word in enumerate(phrase.words):
-        await _store_word_in_phrase(word, phrase.ID, idx, db)
+        await _store_word_in_phrase(word, phrase.id, idx, db)
 
 
 async def _store_word_in_section(word: WordCreate, section_id: str, db):
     """Store word with SECTION_CONTAINS relationship"""
 
-    # Create Word node
+    # Create Word node and link to Section - avoid Cartesian products
+    # Convert pos list to string for storage (or handle as list if Neo4j supports it)
+    pos_value = ",".join(word.pos) if isinstance(word.pos, list) else word.pos
+
     db.run(
         """
         MATCH (s:Section {ID: $section_id})
@@ -156,26 +173,29 @@ async def _store_word_in_section(word: WordCreate, section_id: str, db):
         MERGE (s)-[:SECTION_CONTAINS]->(w)
         """,
         section_id=section_id,
-        ID=word.ID,
+        ID=word.id,
         surface_form=word.surface_form,
         gloss=word.gloss,
-        pos=word.pos,
+        pos=pos_value,
         language=word.language,
     )
 
     # Store morphemes
     for morpheme in word.morphemes:
-        await _store_morpheme(morpheme, word.ID, db)
+        await _store_morpheme(morpheme, word.id, db)
 
     # Create Gloss node if word has gloss annotation
     if word.gloss:
-        await _store_gloss(word.ID, word.gloss, "word", db)
+        await _store_gloss_for_word(word.id, word.gloss, db)
 
 
 async def _store_word_in_phrase(word: WordCreate, phrase_id: str, order: int, db):
     """Store word with PHRASE_COMPOSED_OF relationship (with Order property)"""
 
-    # Create Word node
+    # Create Word node and link to Phrase - avoid Cartesian products
+    # Convert pos list to string for storage
+    pos_value = ",".join(word.pos) if isinstance(word.pos, list) else word.pos
+
     db.run(
         """
         MATCH (p:Phrase {ID: $phrase_id})
@@ -189,25 +209,32 @@ async def _store_word_in_phrase(word: WordCreate, phrase_id: str, order: int, db
         MERGE (p)-[:PHRASE_COMPOSED_OF {Order: $order}]->(w)
         """,
         phrase_id=phrase_id,
-        ID=word.ID,
+        ID=word.id,
         order=order,
         surface_form=word.surface_form,
         gloss=word.gloss,
-        pos=word.pos,
+        pos=pos_value,
         language=word.language,
     )
 
     # Store morphemes
     for morpheme in word.morphemes:
-        await _store_morpheme(morpheme, word.ID, db)
+        await _store_morpheme(morpheme, word.id, db)
 
     # Create Gloss node if word has gloss annotation
     if word.gloss:
-        await _store_gloss(word.ID, word.gloss, "word", db)
+        await _store_gloss_for_word(word.id, word.gloss, db)
 
 
 async def _store_morpheme(morpheme: MorphemeCreate, word_id: str, db):
     """Store a Morpheme node with WORD_MADE_OF relationship"""
+
+    # Convert msa to string if it's a dict or list
+    msa_value = morpheme.msa
+    if isinstance(morpheme.msa, dict):
+        msa_value = ",".join(f"{k}:{v}" for k, v in morpheme.msa.items())
+    elif isinstance(morpheme.msa, list):
+        msa_value = ",".join(morpheme.msa)
 
     db.run(
         """
@@ -224,39 +251,61 @@ async def _store_morpheme(morpheme: MorphemeCreate, word_id: str, db):
         MERGE (w)-[:WORD_MADE_OF]->(m)
         """,
         word_id=word_id,
-        ID=morpheme.ID,
+        ID=morpheme.id,
         type=morpheme.type.value,
         surface_form=morpheme.surface_form,
         citation_form=morpheme.citation_form,
         gloss=morpheme.gloss,
-        msa=morpheme.msa,
+        msa=str(msa_value),
         language=morpheme.language,
     )
 
     # Create Gloss node if morpheme has gloss
     if morpheme.gloss:
-        await _store_gloss(morpheme.ID, morpheme.gloss, "morpheme", db)
+        await _store_gloss_for_morpheme(morpheme.id, morpheme.gloss, db)
 
 
-async def _store_gloss(target_id: str, annotation: str, gloss_type: str, db):
-    """Create a Gloss node with ANALYZES relationship"""
+async def _store_gloss_for_word(word_id: str, annotation: str, db):
+    """Create a Gloss node linked to a Word with ANALYZES relationship"""
 
-    gloss_id = f"gloss-{target_id}"
+    gloss_id = f"gloss-word-{word_id}"
 
     db.run(
         """
-        MATCH (target {ID: $target_id})
+        MATCH (w:Word {ID: $word_id})
         MERGE (g:Gloss {ID: $gloss_id})
           ON CREATE SET g.created_at = datetime()
         SET g.annotation = $annotation,
-            g.gloss_type = $gloss_type,
+            g.gloss_type = 'word',
+            g.language = 'en',
             g.updated_at = datetime()
-        MERGE (g)-[:ANALYZES]->(target)
+        MERGE (g)-[:ANALYZES]->(w)
         """,
-        target_id=target_id,
+        word_id=word_id,
         gloss_id=gloss_id,
         annotation=annotation,
-        gloss_type=gloss_type,
+    )
+
+
+async def _store_gloss_for_morpheme(morpheme_id: str, annotation: str, db):
+    """Create a Gloss node linked to a Morpheme with ANALYZES relationship"""
+
+    gloss_id = f"gloss-morph-{morpheme_id}"
+
+    db.run(
+        """
+        MATCH (m:Morpheme {ID: $morpheme_id})
+        MERGE (g:Gloss {ID: $gloss_id})
+          ON CREATE SET g.created_at = datetime()
+        SET g.annotation = $annotation,
+            g.gloss_type = 'morpheme',
+            g.language = 'en',
+            g.updated_at = datetime()
+        MERGE (g)-[:ANALYZES]->(m)
+        """,
+        morpheme_id=morpheme_id,
+        gloss_id=gloss_id,
+        annotation=annotation,
     )
 
 
@@ -407,7 +456,7 @@ async def get_texts(
         total = db.run(
             """
             MATCH (t:Text)
-            WHERE ($language IS NULL OR t.language_code = $language)
+            WHERE ($language IS NULL OR t.language = $language)
             RETURN count(t) AS total
             """,
             language=language,
@@ -415,7 +464,7 @@ async def get_texts(
 
         cypher_query = """
             MATCH (t:Text)
-            WHERE ($language IS NULL OR t.language_code = $language)
+            WHERE ($language IS NULL OR t.language = $language)
             OPTIONAL MATCH (t)-[:SECTION_PART_OF_TEXT]->(s:Section)
             OPTIONAL MATCH (s)-[:SECTION_CONTAINS]->(w:Word)
             OPTIONAL MATCH (w)-[:WORD_MADE_OF]->(m:Morpheme)
@@ -428,7 +477,7 @@ async def get_texts(
               COALESCE(t.title, '')                               AS title,
               COALESCE(t.source, '')                              AS source,
               COALESCE(t.comment, '')                             AS comment,
-              COALESCE(t.language_code, '')                       AS language_code,
+              COALESCE(t.language, '')                       AS language,
               section_count, word_count, morpheme_count,
               toString(COALESCE(t.created_at, datetime()))        AS created_at
             ORDER BY COALESCE(t.created_at, datetime()) DESC
@@ -505,7 +554,7 @@ async def get_graph_filters(db=Depends(get_db_dependency)):
             MATCH (t:Text)
             RETURN t.ID as id, 
                    COALESCE(t.title, t.ID, 'Untitled') as title,
-                   t.language_code as language
+                   t.language as language
             ORDER BY t.title
             LIMIT 50
         """
@@ -515,8 +564,8 @@ async def get_graph_filters(db=Depends(get_db_dependency)):
         # Get available languages
         languages_query = """
             MATCH (t:Text)
-            WHERE t.language_code IS NOT NULL
-            RETURN DISTINCT t.language_code as code
+            WHERE t.language IS NOT NULL
+            RETURN DISTINCT t.language as code
             ORDER BY code
         """
         lang_result = db.run(languages_query)
@@ -591,7 +640,7 @@ async def get_graph_data(
             query_parts = []
 
             if not node_types or "Text" in allowed_types:
-                lang_filter = "WHERE t.language_code = $language" if language else ""
+                lang_filter = "WHERE t.language = $language" if language else ""
                 query_parts.append(f"CALL {{ MATCH (t:Text) {lang_filter} RETURN t }}")
 
             if not node_types or "Section" in allowed_types:

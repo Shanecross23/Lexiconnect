@@ -138,8 +138,8 @@ export default function FileUpload({
       <div
         className={`relative border-2 border-dashed rounded-xl p-8 transition-all ${
           isDragging
-            ? "border-slate-400 bg-slate-50 dark:bg-slate-700/20"
-            : "border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800"
+            ? "border-stone-400 bg-stone-50"
+            : "border-stone-300 bg-white"
         } ${selectedFile ? "pb-4" : ""}`}
         onDragEnter={handleDragEnter}
         onDragOver={handleDragOver}
@@ -147,9 +147,9 @@ export default function FileUpload({
         onDrop={handleDrop}
       >
         <div className="text-center">
-          <div className="mx-auto w-16 h-16 mb-4 bg-slate-100 dark:bg-slate-700 rounded-full flex items-center justify-center">
+          <div className="mx-auto w-16 h-16 mb-4 bg-stone-100 rounded-full flex items-center justify-center">
             <svg
-              className="w-8 h-8 text-slate-700 dark:text-slate-200"
+              className="w-8 h-8 text-stone-700"
               fill="none"
               strokeLinecap="round"
               strokeLinejoin="round"
@@ -161,15 +161,15 @@ export default function FileUpload({
             </svg>
           </div>
 
-          <h3 className="text-lg font-semibold text-slate-900 dark:text-white mb-2">
+          <h3 className="text-lg font-semibold text-stone-950 mb-2">
             Upload FLEx Text File
           </h3>
-          <p className="text-sm text-slate-600 dark:text-slate-400 mb-4">
+          <p className="text-sm text-stone-700 mb-4">
             Drag and drop your .flextext file here, or click to browse
           </p>
 
           <label htmlFor="file-upload" className="cursor-pointer">
-            <span className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-lg text-white bg-slate-800 hover:bg-slate-900 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-slate-500 transition-colors">
+            <span className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-lg text-white bg-stone-800 hover:bg-stone-900 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-stone-500 transition-colors">
               Select File
             </span>
             <input
@@ -183,12 +183,12 @@ export default function FileUpload({
         </div>
 
         {selectedFile && (
-          <div className="mt-6 pt-6 border-t border-slate-200 dark:border-slate-700">
+          <div className="mt-6 pt-6 border-t border-stone-200">
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center space-x-3 flex-1 min-w-0">
-                <div className="w-10 h-10 bg-slate-100 dark:bg-slate-700 rounded-lg flex items-center justify-center flex-shrink-0">
+                <div className="w-10 h-10 bg-stone-100 rounded-lg flex items-center justify-center flex-shrink-0">
                   <svg
-                    className="w-5 h-5 text-slate-700 dark:text-slate-200"
+                    className="w-5 h-5 text-stone-700"
                     fill="none"
                     strokeLinecap="round"
                     strokeLinejoin="round"
@@ -200,17 +200,17 @@ export default function FileUpload({
                   </svg>
                 </div>
                 <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium text-slate-900 dark:text-white truncate">
+                  <p className="text-sm font-medium text-stone-950 truncate">
                     {selectedFile.name}
                   </p>
-                  <p className="text-xs text-slate-500 dark:text-slate-400">
+                  <p className="text-xs text-stone-700">
                     {(selectedFile.size / 1024).toFixed(2)} KB
                   </p>
                 </div>
               </div>
               <button
                 onClick={handleRemoveFile}
-                className="ml-4 p-2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 transition-colors"
+                className="ml-4 p-2 text-stone-400 hover:text-stone-700 transition-colors"
                 disabled={isUploading}
               >
                 <svg
@@ -230,16 +230,16 @@ export default function FileUpload({
             {isUploading && (
               <div className="mb-4">
                 <div className="flex items-center justify-between mb-1">
-                  <span className="text-xs text-slate-600 dark:text-slate-400">
+                  <span className="text-xs text-stone-700">
                     Uploading...
                   </span>
-                  <span className="text-xs text-slate-600 dark:text-slate-400">
+                  <span className="text-xs text-stone-700">
                     {uploadProgress}%
                   </span>
                 </div>
-                <div className="w-full bg-slate-200 dark:bg-slate-700 rounded-full h-2">
+                <div className="w-full bg-stone-200 rounded-full h-2">
                   <div
-                    className="bg-slate-800 dark:bg-slate-300 h-2 rounded-full transition-all duration-300"
+                    className="bg-stone-800 h-2 rounded-full transition-all duration-300"
                     style={{ width: `${uploadProgress}%` }}
                   />
                 </div>
@@ -287,7 +287,7 @@ export default function FileUpload({
             <button
               onClick={handleUpload}
               disabled={isUploading || uploadStatus === "success"}
-              className="w-full py-2 px-4 border border-transparent rounded-lg text-sm font-medium text-white bg-slate-800 hover:bg-slate-900 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-slate-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              className="w-full py-2 px-4 border border-transparent rounded-lg text-sm font-medium text-white bg-stone-800 hover:bg-stone-900 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-stone-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
               {isUploading
                 ? "Uploading..."
@@ -299,7 +299,7 @@ export default function FileUpload({
         )}
       </div>
 
-      <div className="mt-4 text-xs text-slate-500 dark:text-slate-400">
+      <div className="mt-4 text-xs text-stone-700">
         <p>Supported file format: .flextext</p>
         <p className="mt-1">Maximum file size: 10MB</p>
       </div>

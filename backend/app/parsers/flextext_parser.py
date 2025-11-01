@@ -85,11 +85,11 @@ class FlexTextParser:
                     sections.append(section)
 
         return InterlinearTextCreate(
-            ID=text_id,
+            id=text_id,
             title=title,
             source=source,
             comment=comment,
-            language_code=language_code,
+            language=language_code,
             sections=sections,
             paragraphs=[],  # Keep empty for backward compatibility
         )
@@ -115,7 +115,7 @@ class FlexTextParser:
                     all_words.extend(phrase.words)
 
         return SectionCreate(
-            ID=section_id, order=order, phrases=phrases, words=all_words
+            id=section_id, order=order, phrases=phrases, words=all_words
         )
 
     def _parse_paragraph(
@@ -168,7 +168,7 @@ class FlexTextParser:
                     words.append(word)
 
         return PhraseCreate(
-            ID=phrase_id,
+            id=phrase_id,
             segnum=segnum,
             surface_text=surface_text,
             words=words,
@@ -203,10 +203,10 @@ class FlexTextParser:
             elif item_type == "punct":
                 # Handle punctuation as special case
                 return WordCreate(
-                    ID=stable_uuid("punct", parent_id, str(order), item_text),
+                    id=stable_uuid("punct", parent_id, str(order), item_text),
                     surface_form=item_text,
                     gloss="",
-                    pos="PUNCT",
+                    pos=["PUNCT"],
                     morphemes=[],
                     language=language,
                 )
@@ -223,11 +223,13 @@ class FlexTextParser:
                     morphemes.append(morpheme)
 
         word_id = element.get("guid") or stable_uuid("word", parent_id, str(order))
+        # Convert pos string to list (split by comma if multiple, or wrap single value)
+        pos_list = [p.strip() for p in pos.split(",")] if pos else []
         return WordCreate(
-            ID=word_id,
+            id=word_id,
             surface_form=surface_form,
             gloss=gloss,
-            pos=pos,
+            pos=pos_list,
             morphemes=morphemes,
             language=language,
         )
@@ -250,9 +252,11 @@ class FlexTextParser:
             "infix": MorphemeType.INFIX,
             "circumfix": MorphemeType.CIRCUMFIX,
             "root": MorphemeType.ROOT,
+            "clitic": MorphemeType.CLITIC,
+            "redup": MorphemeType.REDUP,
         }
         raw_type = element.get("type", "stem")
-        morpheme_type = type_mapping.get(raw_type, MorphemeType.STEM)
+        morpheme_type = type_mapping.get(raw_type.lower(), MorphemeType.OTHER)
 
         # Extract morpheme items
         surface_form = ""
@@ -282,7 +286,7 @@ class FlexTextParser:
         )
 
         return MorphemeCreate(
-            ID=morpheme_id,
+            id=morpheme_id,
             type=morpheme_type,
             surface_form=surface_form,
             citation_form=citation_form,
@@ -303,7 +307,7 @@ class FlexTextParser:
         total_morphemes = 0
 
         for text in texts:
-            languages_set.add(text.language_code)
+            languages_set.add(text.language)
             total_sections += len(text.sections)
 
             for section in text.sections:
@@ -314,7 +318,9 @@ class FlexTextParser:
 
                     for word in phrase.words:
                         if word.pos:
-                            pos_tags_set.add(word.pos)
+                            # word.pos is now a list, so add each tag individually
+                            for pos_tag in word.pos:
+                                pos_tags_set.add(pos_tag)
                         total_morphemes += len(word.morphemes)
 
                         for morpheme in word.morphemes:

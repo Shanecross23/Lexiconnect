@@ -48,11 +48,110 @@ async function fetchGraphData(filters?: {
   }
 }
 
+// Get radial level for circular positioning (0 = center, higher = outer rings)
+// Based on schema: Text (center) -> Section -> Phrase -> Word -> Morpheme -> Gloss (outer)
+function getRadialLevel(nodeType: string): number {
+  const hierarchy: { [key: string]: number } = {
+    Text: 0, // Center
+    Section: 1, // First ring
+    Phrase: 2, // Second ring
+    Word: 3, // Third ring
+    Morpheme: 4, // Fourth ring
+    Gloss: 5, // Outermost ring
+  };
+  return hierarchy[nodeType] ?? 3;
+}
+
+// Apply circular positioning based on schema hierarchy
+function applyCircularPositioning(
+  graph: MultiDirectedGraph,
+  nodesByType: { [key: string]: string[] }
+) {
+  const nodeCount = graph.order;
+  // Scale canvas based on node count
+  const baseCanvasSize = Math.max(Math.sqrt(nodeCount) * 150, 1200);
+  const canvasSize = Math.min(baseCanvasSize, 3000);
+  
+  // Base radius for each ring level
+  const baseRadius = canvasSize / 8;
+  const centerX = 0;
+  const centerY = 0;
+
+  // Sort node types by radial level
+  const sortedTypes = Object.keys(nodesByType).sort(
+    (a, b) => getRadialLevel(a) - getRadialLevel(b)
+  );
+
+  sortedTypes.forEach((type) => {
+    const nodesOfType = nodesByType[type];
+    const level = getRadialLevel(type);
+    const count = nodesOfType.length;
+
+    // Calculate radius for this ring level
+    // Text at center (radius 0), others in expanding rings
+    const radius = level === 0 ? 0 : baseRadius * level * 1.2;
+    
+    // For center node (Text), place at origin
+    if (level === 0 && count > 0) {
+      nodesOfType.forEach((nodeId) => {
+        graph.setNodeAttribute(nodeId, "x", centerX);
+        graph.setNodeAttribute(nodeId, "y", centerY);
+      });
+      return;
+    }
+
+    // Distribute nodes evenly around the circle
+    const angleStep = (2 * Math.PI) / Math.max(count, 1);
+
+    nodesOfType.forEach((nodeId, index) => {
+      // Calculate angle for this node
+      const angle = index * angleStep;
+      
+      // Add slight randomness to prevent perfect alignment
+      const angleVariation = (Math.random() - 0.5) * angleStep * 0.15;
+      const radiusVariation = (Math.random() - 0.5) * radius * 0.1;
+      
+      const finalAngle = angle + angleVariation;
+      const finalRadius = Math.max(0, radius + radiusVariation);
+      
+      // Convert polar to cartesian coordinates
+      const x = centerX + finalRadius * Math.cos(finalAngle);
+      const y = centerY + finalRadius * Math.sin(finalAngle);
+
+      graph.setNodeAttribute(nodeId, "x", x);
+      graph.setNodeAttribute(nodeId, "y", y);
+      // Store radial level for constraint during layout
+      graph.setNodeAttribute(nodeId, "radialLevel", level);
+      graph.setNodeAttribute(nodeId, "targetRadius", radius);
+    });
+  });
+}
+
 // Build graph from API data
 function buildGraphFromData(data: any) {
   const graph = new MultiDirectedGraph();
 
-  // Add nodes with initial random positions
+  // Group nodes by type for hierarchical positioning
+  const nodesByType: { [key: string]: string[] } = {};
+
+  // Track sequential IDs for Section nodes
+  let sectionCounter = 0;
+  const sectionIdMap = new Map<string, number>();
+
+  // First pass: collect Section nodes and assign sequential IDs
+  if (data.nodes && data.nodes.length > 0) {
+    data.nodes.forEach((node: any) => {
+      if (node.type === "Section") {
+        const nodeId = String(node.id);
+        if (!sectionIdMap.has(nodeId)) {
+          sectionCounter++;
+          sectionIdMap.set(nodeId, sectionCounter);
+        }
+      }
+    });
+  }
+
+  // Add nodes with initial positions
   if (data.nodes && data.nodes.length > 0) {
     data.nodes.forEach((node: any) => {
       const nodeId = String(node.id);
@@ -80,15 +179,31 @@ function buildGraphFromData(data: any) {
         dynamicSize = Math.max(dynamicSize, 6);
       }
 
+      // Determine label: use sequential ID for Section nodes, otherwise use node.label
+      let nodeLabel = node.label || nodeId;
+      if (node.type === "Section" && sectionIdMap.has(nodeId)) {
+        nodeLabel = String(sectionIdMap.get(nodeId));
+      }
+
+      // Group by type
+      const nodeType = node.type || "Unknown";
+      if (!nodesByType[nodeType]) {
+        nodesByType[nodeType] = [];
+      }
+      nodesByType[nodeType].push(nodeId);
+
       graph.addNode(nodeId, {
-        label: node.label || nodeId,
+        label: nodeLabel,
         size: dynamicSize,
         color: node.color || "#64748b",
         nodeType: node.type, // Store as nodeType to avoid conflict with Sigma's type
-        x: Math.random() * 100,
-        y: Math.random() * 100,
+        x: 0, // Will be set by hierarchical positioning
+        y: 0,
       });
     });
+
+    // Apply circular positioning based on schema hierarchy
+    applyCircularPositioning(graph, nodesByType);
 
     // Add edges
     if (data.edges && data.edges.length > 0) {
@@ -161,33 +276,83 @@ function buildGraphFromData(data: any) {
     });
   }
 
-  // Apply ForceAtlas2 layout for better positioning
+  // Apply ForceAtlas2 layout with radial constraints
   if (graph.order > 0) {
     const settings = forceAtlas2.inferSettings(graph);
 
     // Adjust settings based on graph complexity
     const nodeCount = graph.order;
     const edgeCount = graph.size;
-    const density = edgeCount / (nodeCount * (nodeCount - 1));
+    const density = edgeCount / Math.max(nodeCount * (nodeCount - 1), 1);
 
-    // For dense graphs (like btz1), use stronger separation
+    // For dense graphs, use stronger separation and more iterations
     const isDenseGraph = density > 0.01 || nodeCount > 200;
 
+    // Apply ForceAtlas2 with moderate iterations to refine circular structure
     forceAtlas2.assign(graph, {
-      iterations: isDenseGraph ? 200 : 100,
+      iterations: isDenseGraph ? 200 : 150,
       settings: {
         ...settings,
-        gravity: isDenseGraph ? 0.5 : 1,
-        scalingRatio: isDenseGraph ? 20 : 10,
+        // Moderate gravity to maintain circular structure
+        gravity: isDenseGraph ? 0.3 : 0.5,
+        // Scaling to allow nodes to spread in circular pattern
+        scalingRatio: isDenseGraph ? 25 : 15,
         strongGravityMode: false,
         barnesHutOptimize: true,
-        slowDown: isDenseGraph ? 8 : 5,
-        // Additional settings for better separation
+        // Moderate movement for stable circular layout
+        slowDown: isDenseGraph ? 8 : 6,
+        // Enable logarithmic mode for dense graphs
         linLogMode: isDenseGraph,
         outboundAttractionDistribution: isDenseGraph,
-        adjustSizes: isDenseGraph,
-        edgeWeightInfluence: isDenseGraph ? 0.5 : 1,
+        // Adjust sizes to prevent overlap
+        adjustSizes: true,
+        // Edge weight influence for natural connections
+        edgeWeightInfluence: isDenseGraph ? 0.4 : 0.6,
       },
+    });
+
+    // After ForceAtlas2, constrain nodes to their radial rings
+    // This ensures the circular structure is preserved
+    graph.forEachNode((nodeId) => {
+      const radialLevel = graph.getNodeAttribute(nodeId, "radialLevel");
+      const targetRadius = graph.getNodeAttribute(nodeId, "targetRadius");
+      
+      if (radialLevel !== undefined && targetRadius !== undefined) {
+        const currentX = graph.getNodeAttribute(nodeId, "x");
+        const currentY = graph.getNodeAttribute(nodeId, "y");
+        
+        // Calculate distance from center
+        const distance = Math.sqrt(currentX * currentX + currentY * currentY);
+        
+        // For center nodes (Text), keep at origin
+        if (radialLevel === 0) {
+          graph.setNodeAttribute(nodeId, "x", 0);
+          graph.setNodeAttribute(nodeId, "y", 0);
+        } else {
+          // Constrain to radial ring with some tolerance
+          const radiusTolerance = targetRadius * 0.3;
+          const minRadius = Math.max(0, targetRadius - radiusTolerance);
+          const maxRadius = targetRadius + radiusTolerance;
+          
+          let constrainedDistance = distance;
+          if (distance < minRadius) {
+            constrainedDistance = minRadius;
+          } else if (distance > maxRadius) {
+            constrainedDistance = maxRadius;
+          }
+          
+          // Normalize and scale to constrained radius
+          if (distance > 0) {
+            const scale = constrainedDistance / distance;
+            graph.setNodeAttribute(nodeId, "x", currentX * scale);
+            graph.setNodeAttribute(nodeId, "y", currentY * scale);
+          }
+        }
+        
+        // Clean up temporary attributes
+        graph.removeNodeAttribute(nodeId, "radialLevel");
+        graph.removeNodeAttribute(nodeId, "targetRadius");
+      }
     });
   }
 
@@ -241,7 +406,7 @@ function GraphEvents() {
   return (
     <>
       {hoveredNode && (
-        <div className="absolute top-4 left-4 bg-white dark:bg-slate-800 rounded-lg shadow-lg p-4 border border-slate-200 dark:border-slate-700 z-10 max-w-xs">
+        <div className="absolute top-4 left-4 bg-white rounded-lg shadow-lg p-4 border border-stone-200 z-10 max-w-xs">
           <div className="flex items-center space-x-2 mb-2">
             <div
               className="w-3 h-3 rounded-full"
@@ -251,22 +416,22 @@ function GraphEvents() {
                   .getNodeAttribute(hoveredNode, "color"),
               }}
             />
-            <div className="text-xs font-medium text-slate-500 dark:text-slate-400 uppercase">
+            <div className="text-xs font-medium text-stone-700 uppercase">
               {sigma.getGraph().getNodeAttribute(hoveredNode, "nodeType")}
             </div>
           </div>
-          <div className="text-sm font-semibold text-slate-900 dark:text-white break-words">
+          <div className="text-sm font-semibold text-stone-950 break-words">
             {sigma.getGraph().getNodeAttribute(hoveredNode, "label")}
           </div>
-          <div className="text-xs text-slate-600 dark:text-slate-400 mt-1">
+          <div className="text-xs text-stone-700 mt-1">
             Click to view details
           </div>
         </div>
       )}
 
       {/* Legend */}
-      <div className="absolute bottom-4 left-4 bg-white dark:bg-slate-800 rounded-lg shadow-lg p-4 border border-slate-200 dark:border-slate-700 z-10">
-        <div className="text-xs font-semibold text-slate-900 dark:text-white mb-3">
+      <div className="absolute bottom-4 left-4 bg-white rounded-lg shadow-lg p-4 border border-stone-200 z-10">
+        <div className="text-xs font-semibold text-stone-950 mb-3">
           Node Types
         </div>
         <div className="space-y-2">
@@ -275,54 +440,42 @@ function GraphEvents() {
               className="w-3 h-3 rounded-full"
               style={{ backgroundColor: "#f59e0b" }}
             />
-            <span className="text-xs text-slate-600 dark:text-slate-300">
-              Text
-            </span>
+            <span className="text-xs text-stone-700">Text</span>
           </div>
           <div className="flex items-center space-x-2">
             <div
               className="w-3 h-3 rounded-full"
               style={{ backgroundColor: "#8b5cf6" }}
             />
-            <span className="text-xs text-slate-600 dark:text-slate-300">
-              Section
-            </span>
+            <span className="text-xs text-stone-700">Section</span>
           </div>
           <div className="flex items-center space-x-2">
             <div
               className="w-3 h-3 rounded-full"
               style={{ backgroundColor: "#06b6d4" }}
             />
-            <span className="text-xs text-slate-600 dark:text-slate-300">
-              Phrase
-            </span>
+            <span className="text-xs text-stone-700">Phrase</span>
           </div>
           <div className="flex items-center space-x-2">
             <div
               className="w-3 h-3 rounded-full"
               style={{ backgroundColor: "#0ea5e9" }}
             />
-            <span className="text-xs text-slate-600 dark:text-slate-300">
-              Word
-            </span>
+            <span className="text-xs text-stone-700">Word</span>
           </div>
           <div className="flex items-center space-x-2">
             <div
               className="w-3 h-3 rounded-full"
               style={{ backgroundColor: "#10b981" }}
             />
-            <span className="text-xs text-slate-600 dark:text-slate-300">
-              Morpheme
-            </span>
+            <span className="text-xs text-stone-700">Morpheme</span>
           </div>
           <div className="flex items-center space-x-2">
             <div
               className="w-3 h-3 rounded-full"
               style={{ backgroundColor: "#ec4899" }}
             />
-            <span className="text-xs text-slate-600 dark:text-slate-300">
-              Gloss
-            </span>
+            <span className="text-xs text-stone-700">Gloss</span>
           </div>
         </div>
       </div>
@@ -389,11 +542,11 @@ export default function GraphVisualization() {
         {/* Refresh button */}
         <button
           onClick={handleRefresh}
-          className="bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 rounded-lg shadow-lg p-2 border border-slate-200 dark:border-slate-700 transition-colors"
+          className="bg-white hover:bg-stone-50 rounded-lg shadow-lg p-2 border border-stone-200 transition-colors"
           title="Refresh graph data"
         >
           <svg
-            className="w-5 h-5 text-slate-700 dark:text-slate-200"
+            className="w-5 h-5 text-stone-700"
             fill="none"
             strokeLinecap="round"
             strokeLinejoin="round"
@@ -428,7 +581,7 @@ export default function GraphVisualization() {
       {/* Wipe confirmation dialog */}
       {showWipeConfirm && (
         <div className="absolute inset-0 bg-black bg-opacity-50 flex items-center justify-center z-30">
-          <div className="bg-white dark:bg-slate-800 rounded-lg shadow-xl p-6 max-w-md mx-4 border border-slate-200 dark:border-slate-700">
+          <div className="bg-white rounded-lg shadow-xl p-6 max-w-md mx-4 border border-stone-200">
             <div className="flex items-center space-x-3 mb-4">
               <div className="w-10 h-10 bg-red-100 dark:bg-red-900/30 rounded-full flex items-center justify-center">
                 <svg
@@ -443,12 +596,12 @@ export default function GraphVisualization() {
                   <path d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L3.732 16.5c-.77.833.192 2.5 1.732 2.5z" />
                 </svg>
               </div>
-              <h3 className="text-lg font-semibold text-slate-900 dark:text-white">
+              <h3 className="text-lg font-semibold text-stone-950">
                 Wipe Database
               </h3>
             </div>
 
-            <p className="text-slate-600 dark:text-slate-300 mb-6">
+            <p className="text-stone-950 mb-6">
               Are you sure you want to wipe all data from the database? This
               will permanently delete all texts, sections, phrases, words,
               morphemes, and glosses. This action cannot be undone.
@@ -457,7 +610,7 @@ export default function GraphVisualization() {
             <div className="flex space-x-3">
               <button
                 onClick={() => setShowWipeConfirm(false)}
-                className="flex-1 px-4 py-2 text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 dark:hover:bg-slate-600 rounded-lg transition-colors"
+                className="flex-1 px-4 py-2 text-stone-700 bg-stone-100 hover:bg-stone-200 rounded-lg transition-colors"
               >
                 Cancel
               </button>
@@ -486,15 +639,15 @@ export default function GraphVisualization() {
         settings={{
           renderEdgeLabels: false,
           renderEdges: true,
-          defaultNodeColor: "#0ea5e9",
-          defaultEdgeColor: "#94a3b8",
+          defaultNodeColor: "#57534e",
+          defaultEdgeColor: "#a8a29e",
           defaultEdgeType: "line",
           minEdgeSize: 2,
           maxEdgeSize: 8,
-          edgeColor: "#94a3b8",
+          edgeColor: "#a8a29e",
           labelSize: 10,
           labelWeight: "normal",
-          labelColor: { color: "#1e293b" },
+          labelColor: { color: "#44403c" },
           labelRenderedSizeThreshold: 8,
           labelDensity: 0.5,
           labelGridCellSize: 100,
