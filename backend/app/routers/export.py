@@ -3,16 +3,16 @@
 from __future__ import annotations
 
 import logging
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import Response
 from pydantic import BaseModel
 
 from app.database import get_db_dependency
+from app.exporters import ExporterNotFoundError, get_exporter
 from app.services.neo4j_service import (
     Neo4jExportDataError,
     get_file_graph_data,
 )
-from app.services.export_flextext_service import generate_flextext_xml
 
 
 logger = logging.getLogger(__name__)
@@ -20,15 +20,18 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/export", tags=["export"])
 
 
-class FlexTextExportRequest(BaseModel):
+class ExportRequest(BaseModel):
     """Request body for triggering a FLEXText export."""
 
     file_id: str
 
 
+@router.post("", response_class=Response)
 @router.post("/flextext", response_class=Response)
-async def export_flextext(
-    payload: FlexTextExportRequest, db=Depends(get_db_dependency)
+async def export_dataset(
+    payload: ExportRequest,
+    file_type: str = Query("flextext", alias="file_type"),
+    db=Depends(get_db_dependency),
 ) -> Response:
     """Return a FLEXText export for the requested dataset."""
 
@@ -39,41 +42,53 @@ async def export_flextext(
             detail="file_id must be a non-empty string",
         )
 
-    logger.info("Starting FLEXText export", extra={"file_id": file_id})
+    try:
+        exporter = get_exporter(file_type)
+    except ExporterNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+
+    context = {"file_id": file_id, "file_type": exporter.file_type}
+
+    logger.info("Starting export", extra=context)
 
     try:
         graph_data = get_file_graph_data(file_id, db)
     except Neo4jExportDataError as exc:
         logger.warning(
             "Export failed: text not found",
-            extra={"file_id": file_id, "error": str(exc)},
+            extra={**context, "error": str(exc)},
         )
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except Exception as exc:  # pragma: no cover - defensive logging path
-        logger.exception("Failed to retrieve graph data for export", extra={"file_id": file_id})
+        logger.exception("Failed to retrieve graph data for export", extra=context)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Unable to retrieve export data",
         ) from exc
 
     try:
-        xml_payload = generate_flextext_xml(graph_data)
+        export_payload = exporter.export(graph_data)
     except Exception as exc:  # pragma: no cover - unexpected generation issue
-        logger.exception("Failed to generate FLEXText XML", extra={"file_id": file_id})
+        logger.exception("Failed to serialize export payload", extra=context)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Unable to generate FLEXText export",
+            detail="Unable to generate export output",
         ) from exc
 
+    filename_base = file_id or "export"
+    filename = f"{filename_base}.{exporter.file_extension}"
     headers = {
-        "Content-Disposition": "attachment; filename=\"export.flextext\"",
-        "X-Lexiconnect-Export": "flextext",
+        "Content-Disposition": f"attachment; filename=\"{filename}\"",
+        "X-Lexiconnect-Export": exporter.file_type,
     }
 
     logger.info(
-        "Completed FLEXText export",
-        extra={"file_id": file_id, "bytes": len(xml_payload)},
+        "Completed export",
+        extra={**context, "bytes": len(export_payload)},
     )
 
-    return Response(content=xml_payload, media_type="application/xml", headers=headers)
+    return Response(content=export_payload, media_type=exporter.media_type, headers=headers)
 

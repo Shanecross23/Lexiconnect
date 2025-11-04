@@ -506,7 +506,7 @@ export default function GraphVisualization() {
         description:
           "Interlinear text XML compatible with FieldWorks Language Explorer and related tools.",
         extension: "flextext",
-        endpoint: "/api/v1/export/flextext",
+        endpoint: "/api/v1/export",
       },
     ],
     []
@@ -587,10 +587,14 @@ export default function GraphVisualization() {
       const option =
         exportOptions.find((item) => item.value === fileType) ||
         exportOptions[0];
-      const endpoint = option?.endpoint ?? "/api/v1/export/flextext";
+      const endpoint = option?.endpoint ?? "/api/v1/export";
       const extension = (option?.extension ?? fileType ?? "flextext")
         .toString()
         .replace(/^\./, "");
+
+      const resolvedFileType = option?.value || fileType;
+      const query = new URLSearchParams({ file_type: resolvedFileType }).toString();
+      const requestUrl = `${endpoint}${endpoint.includes("?") ? "&" : "?"}${query}`;
 
       const extractExportError = async (response: Response) => {
         const contentType = response.headers.get("content-type") ?? "";
@@ -629,7 +633,7 @@ export default function GraphVisualization() {
       setIsExporting(true);
 
       try {
-        const response = await fetch(endpoint, {
+        const response = await fetch(requestUrl, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
