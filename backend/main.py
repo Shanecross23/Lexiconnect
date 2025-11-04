@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Import routers
-from app.routers import auth, languages, documentation, linguistic
+from app.routers import auth, languages, documentation, linguistic, export
 from app.database import init_neo4j, close_neo4j
 from app.core.config import settings
 
@@ -48,6 +48,7 @@ app.include_router(documentation.router, prefix="/api/v1/docs", tags=["documenta
 app.include_router(
     linguistic.router, prefix="/api/v1/linguistic", tags=["linguistic-data"]
 )
+app.include_router(export.router, prefix="/api/v1")
 
 
 @app.get("/")
