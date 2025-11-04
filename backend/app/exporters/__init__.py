@@ -6,6 +6,7 @@ from typing import Dict
 
 from .base import Exporter, ExporterNotFoundError
 from .flextext_exporter import FlextextExporter
+from .json_exporter import JsonExporter
 
 
 _exporters: Dict[str, Exporter] = {}
@@ -32,6 +33,7 @@ def get_exporter(file_type: str) -> Exporter:
 
 
 register_exporter(FlextextExporter())
+register_exporter(JsonExporter())
 
 
 __all__ = [
