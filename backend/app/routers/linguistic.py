@@ -247,6 +247,7 @@ async def _store_morpheme(morpheme: MorphemeCreate, word_id: str, db):
             m.gloss = $gloss,
             m.msa = $msa,
             m.language = $language,
+            m.original_guid = $original_guid,
             m.updated_at = datetime()
         MERGE (w)-[:WORD_MADE_OF]->(m)
         """,
@@ -258,6 +259,7 @@ async def _store_morpheme(morpheme: MorphemeCreate, word_id: str, db):
         gloss=morpheme.gloss,
         msa=str(msa_value),
         language=morpheme.language,
+        original_guid=morpheme.original_guid,
     )
 
     # Create Gloss node if morpheme has gloss

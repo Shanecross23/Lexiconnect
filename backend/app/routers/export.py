@@ -9,10 +9,7 @@ from pydantic import BaseModel
 
 from app.database import get_db_dependency
 from app.exporters import ExporterNotFoundError, get_exporter
-from app.services.neo4j_service import (
-    Neo4jExportDataError,
-    get_file_graph_data,
-)
+from app.services.neo4j_service import get_all_texts_graph_data
 
 
 logger = logging.getLogger(__name__)
@@ -55,13 +52,7 @@ async def export_dataset(
     logger.info("Starting export", extra=context)
 
     try:
-        graph_data = get_file_graph_data(file_id, db)
-    except Neo4jExportDataError as exc:
-        logger.warning(
-            "Export failed: text not found",
-            extra={**context, "error": str(exc)},
-        )
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        graph_payloads = get_all_texts_graph_data(db)
     except Exception as exc:  # pragma: no cover - defensive logging path
         logger.exception("Failed to retrieve graph data for export", extra=context)
         raise HTTPException(
@@ -69,8 +60,13 @@ async def export_dataset(
             detail="Unable to retrieve export data",
         ) from exc
 
+    if not graph_payloads:
+        message = "No texts available for export"
+        logger.warning("Export failed: no texts found", extra={**context, "error": message})
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=message)
+
     try:
-        export_payload = exporter.export(graph_data)
+        export_payload = exporter.export({"texts": graph_payloads})
     except Exception as exc:  # pragma: no cover - unexpected generation issue
         logger.exception("Failed to serialize export payload", extra=context)
         raise HTTPException(

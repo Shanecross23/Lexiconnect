@@ -140,7 +140,8 @@ def get_file_graph_data(file_id: str, db) -> GraphData:
                m.citation_form AS morph_citation_form,
                m.gloss AS morph_gloss,
                m.msa AS morph_msa,
-               m.language AS morph_language
+               m.language AS morph_language,
+               m.original_guid AS morph_original_guid
         ORDER BY phrase_id, word_order, morph_order
     """
 
@@ -204,6 +205,7 @@ def get_file_graph_data(file_id: str, db) -> GraphData:
                     "msa": record.get("morph_msa"),
                     "language": _normalize_language_code(record.get("morph_language"))
                     or word_data["language"],
+                    "original_id": record.get("morph_original_guid"),
                 }
             )
 
@@ -221,5 +223,35 @@ def get_file_graph_data(file_id: str, db) -> GraphData:
         "text": text_data,
         "sections": sections,
     }
+
+
+def get_all_texts_graph_data(db) -> List[GraphData]:
+    """Return graph data for every Text node in the database."""
+
+    text_ids_query = """
+        MATCH (t:Text)
+        RETURN COALESCE(t.ID, toString(id(t))) AS id
+        ORDER BY id
+    """
+
+    result = db.run(text_ids_query)
+
+    graph_payloads: List[GraphData] = []
+    seen_ids: set[str] = set()
+
+    for record in result:
+        text_id = record.get("id")
+        if not text_id or text_id in seen_ids:
+            continue
+
+        try:
+            graph_data = get_file_graph_data(text_id, db)
+        except Neo4jExportDataError:
+            continue
+
+        graph_payloads.append(graph_data)
+        seen_ids.add(text_id)
+
+    return graph_payloads
 
 

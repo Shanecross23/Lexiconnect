@@ -1,6 +1,6 @@
 import uuid
 import xml.etree.ElementTree as ET
-from typing import Any, Dict, Iterable, Optional
+from typing import Any, Dict, Iterable, Optional, Sequence
 
 
 _UUID_NS = uuid.UUID("11111111-1111-1111-1111-111111111111")
@@ -39,6 +39,26 @@ def _ensure_container(parent: ET.Element, tag: str) -> ET.Element:
     return node if node is not None else ET.SubElement(parent, tag)
 
 
+def _indent_xml(element: ET.Element, level: int = 0, space: str = "  ") -> None:
+    """Recursively apply indentation so output is human-readable."""
+    indent_str = "\n" + space * level
+    if len(element):
+        if not element.text or not element.text.strip():
+            element.text = indent_str + space
+        for child in element:
+            _indent_xml(child, level + 1, space)
+            if not child.tail or not child.tail.strip():
+                child.tail = indent_str + space
+        # Ensure the last child closes correctly at current level
+        if not element[-1].tail or not element[-1].tail.strip():
+            element[-1].tail = indent_str
+    else:
+        if not element.text or not element.text.strip():
+            element.text = element.text or ""
+        if level and (not element.tail or not element.tail.strip()):
+            element.tail = indent_str
+
+
 def add_word(
     words_parent: ET.Element,
     *,
@@ -47,6 +67,8 @@ def add_word(
     gloss: Optional[str] = None,
     pos: Optional[str] = None,
     language: Optional[str] = None,
+    gloss_language: Optional[str] = None,
+    pos_language: Optional[str] = None,
     punctuation: Optional[str] = None,
 ) -> ET.Element:
     """Add a word element to words container.
@@ -73,8 +95,8 @@ def add_word(
         return word_el
 
     add_item(word_el, "txt", surface_form, lang=language)
-    add_item(word_el, "gls", gloss)
-    add_item(word_el, "pos", pos)
+    add_item(word_el, "gls", gloss, lang=gloss_language)
+    add_item(word_el, "pos", pos, lang=pos_language)
     return word_el
 
 
@@ -88,6 +110,9 @@ def add_morph(
     gloss: Optional[str] = None,
     msa: Optional[str] = None,
     language: Optional[str] = None,
+    citation_language: Optional[str] = None,
+    gloss_language: Optional[str] = None,
+    msa_language: Optional[str] = None,
 ) -> ET.Element:
     """Add a morph element to morphemes container.
     
@@ -113,9 +138,9 @@ def add_morph(
     if morph_type:
         morph_el.set("type", str(morph_type))
     add_item(morph_el, "txt", surface_form, lang=language)
-    add_item(morph_el, "cf", citation_form)
-    add_item(morph_el, "gls", gloss)
-    add_item(morph_el, "msa", msa)
+    add_item(morph_el, "cf", citation_form, lang=citation_language)
+    add_item(morph_el, "gls", gloss, lang=gloss_language)
+    add_item(morph_el, "msa", msa, lang=msa_language)
     return morph_el
 
 
@@ -163,30 +188,28 @@ def get_or_create_morphemes_container(word_element: ET.Element) -> ET.Element:
     return _ensure_container(word_element, "morphemes")
 
 
-def build_flextext_tree(*, guid: Optional[str] = None) -> ET.ElementTree:
-    """Create an empty interlinear-text root ready for population.
-    
-    Creates the root element with required containers but no content.
-    The data population is handled by higher-level services that iterate DB data
-    and add paragraphs/phrases/words/morphemes using the helpers above.
-    
-    Args:
-        guid: Optional GUID for the interlinear-text root
-        
-    Returns:
-        ElementTree with interlinear-text root and paragraphs container
-    """
+def build_document_root(*, version: str = "2") -> ET.Element:
+    """Create a FLEXText document root element."""
+    document = ET.Element("document")
+    document.set("version", version)
+    return document
+
+
+def build_interlinear_text_root(*, guid: Optional[str] = None) -> ET.Element:
+    """Create an empty interlinear-text element ready for population."""
     root = ET.Element("interlinear-text")
     if guid:
         root.set("guid", guid)
-    # Add paragraphs container (required by parser)
     ET.SubElement(root, "paragraphs")
-    return ET.ElementTree(root)
+    return root
 
 
-def serialize_flextext(tree: ET.ElementTree) -> bytes:
-    """Serialize XML tree to UTF-8 bytes with declaration."""
-    return ET.tostring(tree.getroot(), encoding="utf-8", xml_declaration=True)
+def serialize_xml(root: ET.Element) -> bytes:
+    """Serialize XML root to UTF-8 bytes with declaration."""
+    _indent_xml(root)
+    if not root.tail or not root.tail.strip():
+        root.tail = "\n"
+    return ET.tostring(root, encoding="utf-8", xml_declaration=True)
 
 
 GraphDict = Dict[str, Any]
@@ -221,6 +244,14 @@ def _normalize_language_code(code: Optional[str]) -> Optional[str]:
     return code.strip()
 
 
+def _first_valid_language(*codes: Optional[str]) -> Optional[str]:
+    for code in codes:
+        normalized = _normalize_language_code(code)
+        if normalized and normalized.lower() != "unknown":
+            return normalized
+    return None
+
+
 class FlextextExporter:
     """Exporter implementation that produces FLEXText XML output."""
 
@@ -229,13 +260,45 @@ class FlextextExporter:
     file_extension = "flextext"
 
     def export(self, graph_data: GraphDict) -> str:
-        text_info = graph_data.get("text", {}) or {}
-        tree = build_flextext_tree(guid=text_info.get("id"))
-        root = tree.getroot()
+        texts_payload: Sequence[GraphDict]
+        raw_texts = graph_data.get("texts")
+        if isinstance(raw_texts, Sequence) and not isinstance(raw_texts, (str, bytes)):
+            texts_payload = list(raw_texts)  # ensure we can iterate multiple times
+        else:
+            texts_payload = []
 
-        add_metadata_item(root, "title", text_info.get("title"))
-        add_metadata_item(root, "source", text_info.get("source"))
-        add_metadata_item(root, "comment", text_info.get("comment"))
+        if not texts_payload:
+            texts_payload = [graph_data]
+
+        document_root = build_document_root()
+
+        for text_graph in texts_payload:
+            interlinear_root = build_interlinear_text_root(
+                guid=(text_graph.get("text", {}) or {}).get("id")
+            )
+            self._populate_interlinear_text(interlinear_root, text_graph)
+            document_root.append(interlinear_root)
+
+        xml_bytes = serialize_xml(document_root)
+        return xml_bytes.decode("utf-8")
+
+    def _populate_interlinear_text(self, root: ET.Element, graph_data: GraphDict) -> None:
+        text_info = graph_data.get("text", {}) or {}
+
+        metadata_language = _first_valid_language(
+            text_info.get("metadata_language"),
+            text_info.get("language_code"),
+            text_info.get("language"),
+        )
+        analysis_language = _first_valid_language(
+            text_info.get("analysis_language"),
+            text_info.get("gloss_language"),
+            metadata_language,
+        ) or "en"
+
+        add_metadata_item(root, "title", text_info.get("title"), lang=metadata_language)
+        add_metadata_item(root, "source", text_info.get("source"), lang=metadata_language)
+        add_metadata_item(root, "comment", text_info.get("comment"), lang=metadata_language)
 
         paragraphs_container = _get_paragraphs_container(root)
 
@@ -261,13 +324,22 @@ class FlextextExporter:
                 words_container = phrase_el.find("./words")
                 assert words_container is not None
 
+                segnum_item = phrase_el.find("item[@type='segnum']")
+                if segnum_item is not None and analysis_language:
+                    segnum_item.set("lang", analysis_language)
+
                 for word in _sorted_words(phrase.get("words", [])):
                     is_punct = bool(word.get("is_punctuation"))
                     punctuation_value: Optional[str] = None
                     if is_punct:
-                        punctuation_value = word.get("surface_form") or word.get("punctuation")
+                        punctuation_value = (
+                            word.get("surface_form") or word.get("punctuation")
+                        )
 
-                    word_language = _normalize_language_code(word.get("language")) or phrase_language
+                    word_language = (
+                        _normalize_language_code(word.get("language"))
+                        or phrase_language
+                    )
 
                     word_el = add_word(
                         words_container,
@@ -276,6 +348,8 @@ class FlextextExporter:
                         gloss=word.get("gloss"),
                         pos=word.get("pos"),
                         language=word_language,
+                        gloss_language=analysis_language,
+                        pos_language=analysis_language,
                         punctuation=punctuation_value,
                     )
 
@@ -292,18 +366,23 @@ class FlextextExporter:
                             _normalize_language_code(morpheme.get("language"))
                             or word_language
                         )
+                        morph_guid = (
+                            morpheme.get("original_id")
+                            or morpheme.get("guid")
+                            or morpheme.get("id")
+                        )
 
                         add_morph(
                             morphemes_container,
-                            guid=morpheme.get("id"),
+                            guid=morph_guid,
                             morph_type=morpheme.get("type"),
                             surface_form=morpheme.get("surface_form"),
                             citation_form=morpheme.get("citation_form"),
                             gloss=morpheme.get("gloss"),
                             msa=morpheme.get("msa"),
                             language=morph_language,
+                            citation_language=morph_language,
+                            gloss_language=analysis_language,
+                            msa_language=analysis_language,
                         )
-
-        xml_bytes = serialize_flextext(tree)
-        return xml_bytes.decode("utf-8")
 
