@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   SigmaContainer,
   useLoadGraph,
@@ -11,6 +11,7 @@ import { MultiDirectedGraph } from "graphology";
 import forceAtlas2 from "graphology-layout-forceatlas2";
 import "@react-sigma/core/lib/react-sigma.min.css";
 import GraphFilters from "./GraphFilters";
+import ExportFileTypeModal, { ExportOption } from "./ExportFileTypeModal";
 
 // Fetch graph data from API
 async function fetchGraphData(filters?: {
@@ -491,6 +492,24 @@ function GraphEvents() {
 }
 
 export default function GraphVisualization() {
+  const exportOptions = useMemo<ExportOption[]>(
+    () => [
+      {
+        value: "flextext",
+        label: "FieldWorks FLEXText (.flextext)",
+        description:
+          "Interlinear text XML compatible with FieldWorks Language Explorer and related tools.",
+        extension: "flextext",
+        endpoint: "/api/v1/export/flextext",
+      },
+    ],
+    []
+  );
+
+  const [selectedExportType, setSelectedExportType] = useState(
+    exportOptions[0]?.value ?? "flextext"
+  );
+  const [isExportModalOpen, setIsExportModalOpen] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
   const [filters, setFilters] = useState<any>(undefined);
   const [showWipeConfirm, setShowWipeConfirm] = useState(false);
@@ -537,7 +556,57 @@ export default function GraphVisualization() {
     [selectedTextId]
   );
 
-  const handleExportClick = async () => {
+  const triggerExport = useCallback(
+    async (fileType: string, targetFileId: string) => {
+      const option =
+        exportOptions.find((item) => item.value === fileType) ||
+        exportOptions[0];
+      const endpoint = option?.endpoint ?? "/api/v1/export/flextext";
+      const extension = (option?.extension ?? fileType ?? "flextext")
+        .toString()
+        .replace(/^\./, "");
+
+      setIsExporting(true);
+
+      try {
+        const response = await fetch(endpoint, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ file_id: targetFileId }),
+        });
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          throw new Error(errorText || "Export failed");
+        }
+
+        const blob = await response.blob();
+        const url = window.URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        const filenameBase = targetFileId || "export";
+        const filename = `${filenameBase}.${extension}`;
+
+        link.href = url;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        window.URL.revokeObjectURL(url);
+
+        setIsExportModalOpen(false);
+      } catch (error) {
+        console.error("Error exporting FLEXText:", error);
+        alert("Failed to export the FLEXText file. Please try again.");
+      } finally {
+        setIsExporting(false);
+      }
+    },
+    [exportOptions]
+  );
+
+  const handleExportButtonClick = () => {
     const targetFileId = (activeTextId ?? "").trim();
 
     if (!targetFileId) {
@@ -545,48 +614,26 @@ export default function GraphVisualization() {
       return;
     }
 
-    const confirmed = window.confirm(
-      "Export the current dataset as a .flextext file?"
-    );
+    setIsExportModalOpen(true);
+  };
 
-    if (!confirmed) {
+  const handleExportConfirm = useCallback(async () => {
+    const targetFileId = (activeTextId ?? "").trim();
+
+    if (!targetFileId) {
+      alert("Please select a specific text before exporting.");
+      setIsExportModalOpen(false);
       return;
     }
 
-    setIsExporting(true);
+    await triggerExport(selectedExportType, targetFileId);
+  }, [activeTextId, selectedExportType, triggerExport]);
 
-    try {
-      const response = await fetch("/api/v1/export/flextext", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ file_id: targetFileId }),
-      });
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(errorText || "Export failed");
-      }
-
-      const blob = await response.blob();
-      const url = window.URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      const filename = `${targetFileId || "export"}.flextext`;
-
-      link.href = url;
-      link.download = filename;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      window.URL.revokeObjectURL(url);
-    } catch (error) {
-      console.error("Error exporting FLEXText:", error);
-      alert("Failed to export the FLEXText file. Please try again.");
-    } finally {
-      setIsExporting(false);
+  const handleExportCancel = useCallback(() => {
+    if (!isExporting) {
+      setIsExportModalOpen(false);
     }
-  };
+  }, [isExporting]);
 
   const handleWipeDatabase = async () => {
     setIsWiping(true);
@@ -627,11 +674,21 @@ export default function GraphVisualization() {
       {/* Filter Panel */}
       <GraphFilters onFilterChange={handleFilterChange} />
 
+      <ExportFileTypeModal
+        isOpen={isExportModalOpen}
+        options={exportOptions}
+        selectedType={selectedExportType}
+        onSelect={setSelectedExportType}
+        onCancel={handleExportCancel}
+        onConfirm={handleExportConfirm}
+        isSubmitting={isExporting}
+      />
+
       {/* Control buttons */}
       <div className="absolute top-4 right-4 z-20 flex space-x-2">
         {/* Export button */}
         <button
-          onClick={handleExportClick}
+          onClick={handleExportButtonClick}
           disabled={isExporting}
           className="bg-blue-600 hover:bg-blue-700 text-white rounded-lg shadow-lg px-3 py-2 border border-blue-700 transition-colors flex items-center space-x-2 disabled:bg-blue-400 disabled:border-blue-400"
           title="Export current dataset as FLEXText"
