@@ -13,6 +13,12 @@ import "@react-sigma/core/lib/react-sigma.min.css";
 import GraphFilters from "./GraphFilters";
 import ExportFileTypeModal, { ExportOption } from "./ExportFileTypeModal";
 
+type ExportFeedback = {
+  id: number;
+  type: "success" | "error";
+  message: string;
+};
+
 // Fetch graph data from API
 async function fetchGraphData(filters?: {
   textId?: string;
@@ -516,8 +522,28 @@ export default function GraphVisualization() {
   const [isWiping, setIsWiping] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [activeTextId, setActiveTextId] = useState<string | null>(null);
+  const [exportFeedback, setExportFeedback] = useState<ExportFeedback | null>(
+    null
+  );
 
   const selectedTextId = filters?.textId;
+
+  const showExportFeedback = useCallback(
+    (type: ExportFeedback["type"], message: string) => {
+      setExportFeedback({ id: Date.now(), type, message });
+    },
+    []
+  );
+
+  useEffect(() => {
+    if (!exportFeedback) {
+      return undefined;
+    }
+    const timer = window.setTimeout(() => {
+      setExportFeedback(null);
+    }, 6000);
+    return () => window.clearTimeout(timer);
+  }, [exportFeedback]);
 
   const handleRefresh = () => {
     setRefreshKey((prev) => prev + 1);
@@ -566,6 +592,40 @@ export default function GraphVisualization() {
         .toString()
         .replace(/^\./, "");
 
+      const extractExportError = async (response: Response) => {
+        const contentType = response.headers.get("content-type") ?? "";
+        const rawText = await response.text();
+
+        if (contentType.includes("application/json")) {
+          try {
+            const json = JSON.parse(rawText);
+            if (json && typeof json === "object" && "detail" in json) {
+              const detail = (json as { detail?: unknown }).detail;
+              if (Array.isArray(detail)) {
+                return detail
+                  .map((item) =>
+                    typeof item === "string"
+                      ? item
+                      : JSON.stringify(item, null, 2)
+                  )
+                  .join("\n");
+              }
+              if (detail) {
+                return String(detail);
+              }
+            }
+          } catch (error) {
+            console.debug("Failed to parse export error JSON", error);
+          }
+        }
+
+        if (rawText) {
+          return rawText;
+        }
+
+        return "Export failed";
+      };
+
       setIsExporting(true);
 
       try {
@@ -578,7 +638,7 @@ export default function GraphVisualization() {
         });
 
         if (!response.ok) {
-          const errorText = await response.text();
+          const errorText = await extractExportError(response);
           throw new Error(errorText || "Export failed");
         }
 
@@ -596,21 +656,32 @@ export default function GraphVisualization() {
         window.URL.revokeObjectURL(url);
 
         setIsExportModalOpen(false);
+        showExportFeedback(
+          "success",
+          `Download started for ${filenameBase}.${extension}`
+        );
       } catch (error) {
         console.error("Error exporting FLEXText:", error);
-        alert("Failed to export the FLEXText file. Please try again.");
+        const message =
+          error instanceof Error && error.message
+            ? error.message
+            : "Failed to export the FLEXText file. Please try again.";
+        showExportFeedback("error", message);
       } finally {
         setIsExporting(false);
       }
     },
-    [exportOptions]
+    [exportOptions, showExportFeedback]
   );
 
   const handleExportButtonClick = () => {
     const targetFileId = (activeTextId ?? "").trim();
 
     if (!targetFileId) {
-      alert("Please select a specific text before exporting.");
+      showExportFeedback(
+        "error",
+        "Select a specific text in the filters before exporting."
+      );
       return;
     }
 
@@ -621,13 +692,16 @@ export default function GraphVisualization() {
     const targetFileId = (activeTextId ?? "").trim();
 
     if (!targetFileId) {
-      alert("Please select a specific text before exporting.");
+      showExportFeedback(
+        "error",
+        "Select a specific text in the filters before exporting."
+      );
       setIsExportModalOpen(false);
       return;
     }
 
     await triggerExport(selectedExportType, targetFileId);
-  }, [activeTextId, selectedExportType, triggerExport]);
+  }, [activeTextId, selectedExportType, triggerExport, showExportFeedback]);
 
   const handleExportCancel = useCallback(() => {
     if (!isExporting) {
@@ -673,6 +747,18 @@ export default function GraphVisualization() {
     <div className="w-full h-full relative">
       {/* Filter Panel */}
       <GraphFilters onFilterChange={handleFilterChange} />
+
+      {exportFeedback ? (
+        <div
+          className={`absolute left-1/2 top-4 z-30 w-[min(90vw,28rem)] -translate-x-1/2 rounded-lg border px-4 py-3 text-sm shadow-lg transition-opacity ${
+            exportFeedback.type === "success"
+              ? "border-green-200 bg-green-50 text-green-700"
+              : "border-red-200 bg-red-50 text-red-700"
+          }`}
+        >
+          {exportFeedback.message}
+        </div>
+      ) : null}
 
       <ExportFileTypeModal
         isOpen={isExportModalOpen}
