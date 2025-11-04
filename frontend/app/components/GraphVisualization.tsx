@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   SigmaContainer,
   useLoadGraph,
@@ -359,7 +359,13 @@ function buildGraphFromData(data: any) {
   return graph;
 }
 
-function LoadGraph({ filters }: { filters?: any }) {
+function LoadGraph({
+  filters,
+  onDataLoaded,
+}: {
+  filters?: any;
+  onDataLoaded?: (data: any) => void;
+}) {
   const loadGraph = useLoadGraph();
   const [isLoading, setIsLoading] = useState(true);
 
@@ -367,13 +373,14 @@ function LoadGraph({ filters }: { filters?: any }) {
     const loadData = async () => {
       setIsLoading(true);
       const data = await fetchGraphData(filters);
+      onDataLoaded?.(data);
       const graph = buildGraphFromData(data);
       loadGraph(graph);
       setIsLoading(false);
     };
 
     loadData();
-  }, [loadGraph, filters]);
+  }, [loadGraph, filters, onDataLoaded]);
 
   return null;
 }
@@ -488,6 +495,10 @@ export default function GraphVisualization() {
   const [filters, setFilters] = useState<any>(undefined);
   const [showWipeConfirm, setShowWipeConfirm] = useState(false);
   const [isWiping, setIsWiping] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
+  const [activeTextId, setActiveTextId] = useState<string | null>(null);
+
+  const selectedTextId = filters?.textId;
 
   const handleRefresh = () => {
     setRefreshKey((prev) => prev + 1);
@@ -496,6 +507,85 @@ export default function GraphVisualization() {
   const handleFilterChange = (newFilters: any) => {
     setFilters(newFilters);
     setRefreshKey((prev) => prev + 1);
+    setActiveTextId(newFilters?.textId ?? null);
+  };
+
+  const handleDataLoaded = useCallback(
+    (data: any) => {
+      if (selectedTextId) {
+        setActiveTextId(selectedTextId);
+        return;
+      }
+
+      if (data?.nodes && Array.isArray(data.nodes)) {
+        const textNode = data.nodes.find(
+          (node: any) => node?.type === "Text"
+        );
+
+        if (textNode) {
+          const candidate =
+            textNode?.properties?.ID ??
+            textNode?.properties?.id ??
+            textNode?.id;
+
+          if (candidate) {
+            setActiveTextId(String(candidate));
+          }
+        }
+      }
+    },
+    [selectedTextId]
+  );
+
+  const handleExportClick = async () => {
+    const targetFileId = (activeTextId ?? "").trim();
+
+    if (!targetFileId) {
+      alert("Please select a specific text before exporting.");
+      return;
+    }
+
+    const confirmed = window.confirm(
+      "Export the current dataset as a .flextext file?"
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    setIsExporting(true);
+
+    try {
+      const response = await fetch("/api/v1/export/flextext", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ file_id: targetFileId }),
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(errorText || "Export failed");
+      }
+
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      const filename = `${targetFileId || "export"}.flextext`;
+
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (error) {
+      console.error("Error exporting FLEXText:", error);
+      alert("Failed to export the FLEXText file. Please try again.");
+    } finally {
+      setIsExporting(false);
+    }
   };
 
   const handleWipeDatabase = async () => {
@@ -539,6 +629,36 @@ export default function GraphVisualization() {
 
       {/* Control buttons */}
       <div className="absolute top-4 right-4 z-20 flex space-x-2">
+        {/* Export button */}
+        <button
+          onClick={handleExportClick}
+          disabled={isExporting}
+          className="bg-blue-600 hover:bg-blue-700 text-white rounded-lg shadow-lg px-3 py-2 border border-blue-700 transition-colors flex items-center space-x-2 disabled:bg-blue-400 disabled:border-blue-400"
+          title="Export current dataset as FLEXText"
+        >
+          {isExporting ? (
+            <>
+              <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+              <span className="text-sm font-medium">Exporting...</span>
+            </>
+          ) : (
+            <>
+              <svg
+                className="w-5 h-5"
+                fill="none"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth="2"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+              >
+                <path d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2m-4-4l-4 4m0 0l-4-4m4 4V4" />
+              </svg>
+              <span className="text-sm font-medium">Export</span>
+            </>
+          )}
+        </button>
+
         {/* Refresh button */}
         <button
           onClick={handleRefresh}
@@ -656,7 +776,7 @@ export default function GraphVisualization() {
           zIndex: true,
         }}
       >
-        <LoadGraph filters={filters} />
+        <LoadGraph filters={filters} onDataLoaded={handleDataLoaded} />
         <GraphEvents />
       </SigmaContainer>
     </div>
