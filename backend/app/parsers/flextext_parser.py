@@ -296,7 +296,7 @@ class FlexTextParser:
         )
 
     def get_language_stats(self, texts: List[InterlinearTextCreate]) -> Dict[str, Any]:
-        """Generate statistics about the parsed texts"""
+        """Generate comprehensive statistics about the parsed texts"""
         languages_set: set[str] = set()
         pos_tags_set: set[str] = set()
         morpheme_types_dict: Dict[str, int] = {}
@@ -305,22 +305,50 @@ class FlexTextParser:
         total_phrases = 0
         total_words = 0
         total_morphemes = 0
+        
+        # New statistics
+        words_with_morphemes = 0
+        words_with_only_translation = 0  # Has gloss but no morphemes
+        annotated_texts = 0  # Texts that have at least one morpheme
+        words_by_whitespace = 0  # Words counted from phrase surface_text
+        
+        # Track which texts have morphemes
+        texts_with_morphemes = set()
 
         for text in texts:
             languages_set.add(text.language)
             total_sections += len(text.sections)
+            text_has_morphemes = False
 
             for section in text.sections:
                 total_phrases += len(section.phrases)
 
                 for phrase in section.phrases:
                     total_words += len(phrase.words)
+                    
+                    # Count words from whitespace in surface_text
+                    if phrase.surface_text:
+                        # Split by whitespace and filter out empty strings
+                        whitespace_words = [
+                            w for w in phrase.surface_text.split() 
+                            if w.strip()
+                        ]
+                        words_by_whitespace += len(whitespace_words)
 
                     for word in phrase.words:
                         if word.pos:
                             # word.pos is now a list, so add each tag individually
                             for pos_tag in word.pos:
                                 pos_tags_set.add(pos_tag)
+                        
+                        # Check if word has morphemes
+                        if word.morphemes and len(word.morphemes) > 0:
+                            words_with_morphemes += 1
+                            text_has_morphemes = True
+                        # Check if word has only translation (gloss but no morphemes)
+                        elif word.gloss and word.gloss.strip():
+                            words_with_only_translation += 1
+                        
                         total_morphemes += len(word.morphemes)
 
                         for morpheme in word.morphemes:
@@ -328,13 +356,23 @@ class FlexTextParser:
                             morpheme_types_dict[morph_type] = (
                                 morpheme_types_dict.get(morph_type, 0) + 1
                             )
+            
+            if text_has_morphemes:
+                texts_with_morphemes.add(text.id)
+        
+        annotated_texts = len(texts_with_morphemes)
 
-        # Return stats dictionary
+        # Return comprehensive stats dictionary
         return {
             "total_texts": len(texts),
+            "annotated_texts": annotated_texts,
             "total_sections": total_sections,
-            "total_phrases": total_phrases,
+            "total_phrases": total_phrases,  # This represents sentences
+            "total_sentences": total_phrases,  # Alias for clarity
             "total_words": total_words,
+            "words_by_whitespace": words_by_whitespace,
+            "words_with_morphemes": words_with_morphemes,
+            "words_with_only_translation": words_with_only_translation,
             "total_morphemes": total_morphemes,
             "languages": list(languages_set),
             "morpheme_types": morpheme_types_dict,

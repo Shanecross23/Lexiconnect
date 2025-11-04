@@ -3,15 +3,18 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import FileUpload from "../components/FileUpload";
+import CorpusStatistics from "../components/CorpusStatistics";
 
 export default function UploadPage() {
   const router = useRouter();
   const [uploadedFiles, setUploadedFiles] = useState<any[]>([]);
   const [showSuccess, setShowSuccess] = useState(false);
+  const [uploadStats, setUploadStats] = useState<any>(null);
 
   const handleUploadSuccess = (data: any) => {
     setUploadedFiles((prev) => [...prev, data]);
     setShowSuccess(true);
+    setUploadStats(data.file_stats || null);
     setTimeout(() => setShowSuccess(false), 5000);
   };
 
@@ -66,6 +69,13 @@ export default function UploadPage() {
             onUploadError={handleUploadError}
           />
         </div>
+
+        {/* Statistics Visualization */}
+        {uploadStats && (
+          <div className="bg-white rounded-xl shadow-lg p-8 border border-stone-200 mb-8">
+            <CorpusStatistics stats={uploadStats} />
+          </div>
+        )}
 
         {/* Information Section */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
