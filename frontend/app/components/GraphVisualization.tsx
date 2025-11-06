@@ -508,6 +508,14 @@ export default function GraphVisualization() {
         extension: "flextext",
         endpoint: "/api/v1/export",
       },
+      {
+        value: "json",
+        label: "Lexiconnect JSON snapshot (.json)",
+        description:
+          "Structured JSON export mirroring the Text → Section → Phrase → Word → Morpheme hierarchy.",
+        extension: "json",
+        endpoint: "/api/v1/export",
+      },
     ],
     []
   );
@@ -665,11 +673,12 @@ export default function GraphVisualization() {
           `Download started for ${filenameBase}.${extension}`
         );
       } catch (error) {
-        console.error("Error exporting FLEXText:", error);
+        const label = option?.label ?? "export file";
+        console.error(`Error exporting ${label}:`, error);
         const message =
           error instanceof Error && error.message
             ? error.message
-            : "Failed to export the FLEXText file. Please try again.";
+            : `Failed to export ${label}. Please try again.`;
         showExportFeedback("error", message);
       } finally {
         setIsExporting(false);
@@ -781,7 +790,7 @@ export default function GraphVisualization() {
           onClick={handleExportButtonClick}
           disabled={isExporting}
           className="bg-blue-600 hover:bg-blue-700 text-white rounded-lg shadow-lg px-3 py-2 border border-blue-700 transition-colors flex items-center space-x-2 disabled:bg-blue-400 disabled:border-blue-400"
-          title="Export current dataset as FLEXText"
+          title="Export current dataset"
         >
           {isExporting ? (
             <>
