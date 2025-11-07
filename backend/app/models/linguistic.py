@@ -59,6 +59,7 @@ class FrequencyItem(str, Enum):
 
 # Create models
 class MorphemeCreate(IdSchema):
+    original_guid: Optional[str] = None
     type: MorphemeType
     surface_form: str = ""
     citation_form: str = ""

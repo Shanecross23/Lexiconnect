@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   SigmaContainer,
   useLoadGraph,
@@ -11,6 +11,13 @@ import { MultiDirectedGraph } from "graphology";
 import forceAtlas2 from "graphology-layout-forceatlas2";
 import "@react-sigma/core/lib/react-sigma.min.css";
 import GraphFilters from "./GraphFilters";
+import ExportFileTypeModal, { ExportOption } from "./ExportFileTypeModal";
+
+type ExportFeedback = {
+  id: number;
+  type: "success" | "error";
+  message: string;
+};
 
 // Fetch graph data from API
 async function fetchGraphData(filters?: {
@@ -359,7 +366,13 @@ function buildGraphFromData(data: any) {
   return graph;
 }
 
-function LoadGraph({ filters }: { filters?: any }) {
+function LoadGraph({
+  filters,
+  onDataLoaded,
+}: {
+  filters?: any;
+  onDataLoaded?: (data: any) => void;
+}) {
   const loadGraph = useLoadGraph();
   const [isLoading, setIsLoading] = useState(true);
 
@@ -367,13 +380,14 @@ function LoadGraph({ filters }: { filters?: any }) {
     const loadData = async () => {
       setIsLoading(true);
       const data = await fetchGraphData(filters);
+      onDataLoaded?.(data);
       const graph = buildGraphFromData(data);
       loadGraph(graph);
       setIsLoading(false);
     };
 
     loadData();
-  }, [loadGraph, filters]);
+  }, [loadGraph, filters, onDataLoaded]);
 
   return null;
 }
@@ -484,10 +498,60 @@ function GraphEvents() {
 }
 
 export default function GraphVisualization() {
+  const exportOptions = useMemo<ExportOption[]>(
+    () => [
+      {
+        value: "flextext",
+        label: "FieldWorks FLEXText (.flextext)",
+        description:
+          "Interlinear text XML compatible with FieldWorks Language Explorer and related tools.",
+        extension: "flextext",
+        endpoint: "/api/v1/export",
+      },
+      {
+        value: "json",
+        label: "Lexiconnect JSON snapshot (.json)",
+        description:
+          "Structured JSON export mirroring the Text → Section → Phrase → Word → Morpheme hierarchy.",
+        extension: "json",
+        endpoint: "/api/v1/export",
+      },
+    ],
+    []
+  );
+
+  const [selectedExportType, setSelectedExportType] = useState(
+    exportOptions[0]?.value ?? "flextext"
+  );
+  const [isExportModalOpen, setIsExportModalOpen] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
   const [filters, setFilters] = useState<any>(undefined);
   const [showWipeConfirm, setShowWipeConfirm] = useState(false);
   const [isWiping, setIsWiping] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
+  const [activeTextId, setActiveTextId] = useState<string | null>(null);
+  const [exportFeedback, setExportFeedback] = useState<ExportFeedback | null>(
+    null
+  );
+
+  const selectedTextId = filters?.textId;
+
+  const showExportFeedback = useCallback(
+    (type: ExportFeedback["type"], message: string) => {
+      setExportFeedback({ id: Date.now(), type, message });
+    },
+    []
+  );
+
+  useEffect(() => {
+    if (!exportFeedback) {
+      return undefined;
+    }
+    const timer = window.setTimeout(() => {
+      setExportFeedback(null);
+    }, 6000);
+    return () => window.clearTimeout(timer);
+  }, [exportFeedback]);
 
   const handleRefresh = () => {
     setRefreshKey((prev) => prev + 1);
@@ -496,7 +560,167 @@ export default function GraphVisualization() {
   const handleFilterChange = (newFilters: any) => {
     setFilters(newFilters);
     setRefreshKey((prev) => prev + 1);
+    setActiveTextId(newFilters?.textId ?? null);
   };
+
+  const handleDataLoaded = useCallback(
+    (data: any) => {
+      if (selectedTextId) {
+        setActiveTextId(selectedTextId);
+        return;
+      }
+
+      if (data?.nodes && Array.isArray(data.nodes)) {
+        const textNode = data.nodes.find(
+          (node: any) => node?.type === "Text"
+        );
+
+        if (textNode) {
+          const candidate =
+            textNode?.properties?.ID ??
+            textNode?.properties?.id ??
+            textNode?.id;
+
+          if (candidate) {
+            setActiveTextId(String(candidate));
+          }
+        }
+      }
+    },
+    [selectedTextId]
+  );
+
+  const triggerExport = useCallback(
+    async (fileType: string, targetFileId: string) => {
+      const option =
+        exportOptions.find((item) => item.value === fileType) ||
+        exportOptions[0];
+      const endpoint = option?.endpoint ?? "/api/v1/export";
+      const extension = (option?.extension ?? fileType ?? "flextext")
+        .toString()
+        .replace(/^\./, "");
+
+      const resolvedFileType = option?.value || fileType;
+      const query = new URLSearchParams({ file_type: resolvedFileType }).toString();
+      const requestUrl = `${endpoint}${endpoint.includes("?") ? "&" : "?"}${query}`;
+
+      const extractExportError = async (response: Response) => {
+        const contentType = response.headers.get("content-type") ?? "";
+        const rawText = await response.text();
+
+        if (contentType.includes("application/json")) {
+          try {
+            const json = JSON.parse(rawText);
+            if (json && typeof json === "object" && "detail" in json) {
+              const detail = (json as { detail?: unknown }).detail;
+              if (Array.isArray(detail)) {
+                return detail
+                  .map((item) =>
+                    typeof item === "string"
+                      ? item
+                      : JSON.stringify(item, null, 2)
+                  )
+                  .join("\n");
+              }
+              if (detail) {
+                return String(detail);
+              }
+            }
+          } catch (error) {
+            console.debug("Failed to parse export error JSON", error);
+          }
+        }
+
+        if (rawText) {
+          return rawText;
+        }
+
+        return "Export failed";
+      };
+
+      setIsExporting(true);
+
+      try {
+        const response = await fetch(requestUrl, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ file_id: targetFileId }),
+        });
+
+        if (!response.ok) {
+          const errorText = await extractExportError(response);
+          throw new Error(errorText || "Export failed");
+        }
+
+        const blob = await response.blob();
+        const url = window.URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        const filenameBase = targetFileId || "export";
+        const filename = `${filenameBase}.${extension}`;
+
+        link.href = url;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        window.URL.revokeObjectURL(url);
+
+        setIsExportModalOpen(false);
+        showExportFeedback(
+          "success",
+          `Download started for ${filenameBase}.${extension}`
+        );
+      } catch (error) {
+        const label = option?.label ?? "export file";
+        console.error(`Error exporting ${label}:`, error);
+        const message =
+          error instanceof Error && error.message
+            ? error.message
+            : `Failed to export ${label}. Please try again.`;
+        showExportFeedback("error", message);
+      } finally {
+        setIsExporting(false);
+      }
+    },
+    [exportOptions, showExportFeedback]
+  );
+
+  const handleExportButtonClick = () => {
+    const targetFileId = (activeTextId ?? "").trim();
+
+    if (!targetFileId) {
+      showExportFeedback(
+        "error",
+        "Select a specific text in the filters before exporting."
+      );
+      return;
+    }
+
+    setIsExportModalOpen(true);
+  };
+
+  const handleExportConfirm = useCallback(async () => {
+    const targetFileId = (activeTextId ?? "").trim();
+
+    if (!targetFileId) {
+      showExportFeedback(
+        "error",
+        "Select a specific text in the filters before exporting."
+      );
+      setIsExportModalOpen(false);
+      return;
+    }
+
+    await triggerExport(selectedExportType, targetFileId);
+  }, [activeTextId, selectedExportType, triggerExport, showExportFeedback]);
+
+  const handleExportCancel = useCallback(() => {
+    if (!isExporting) {
+      setIsExportModalOpen(false);
+    }
+  }, [isExporting]);
 
   const handleWipeDatabase = async () => {
     setIsWiping(true);
@@ -537,8 +761,60 @@ export default function GraphVisualization() {
       {/* Filter Panel */}
       <GraphFilters onFilterChange={handleFilterChange} />
 
+      {exportFeedback ? (
+        <div
+          className={`absolute left-1/2 top-4 z-30 w-[min(90vw,28rem)] -translate-x-1/2 rounded-lg border px-4 py-3 text-sm shadow-lg transition-opacity ${
+            exportFeedback.type === "success"
+              ? "border-green-200 bg-green-50 text-green-700"
+              : "border-red-200 bg-red-50 text-red-700"
+          }`}
+        >
+          {exportFeedback.message}
+        </div>
+      ) : null}
+
+      <ExportFileTypeModal
+        isOpen={isExportModalOpen}
+        options={exportOptions}
+        selectedType={selectedExportType}
+        onSelect={setSelectedExportType}
+        onCancel={handleExportCancel}
+        onConfirm={handleExportConfirm}
+        isSubmitting={isExporting}
+      />
+
       {/* Control buttons */}
       <div className="absolute top-4 right-4 z-20 flex space-x-2">
+        {/* Export button */}
+        <button
+          onClick={handleExportButtonClick}
+          disabled={isExporting}
+          className="bg-blue-600 hover:bg-blue-700 text-white rounded-lg shadow-lg px-3 py-2 border border-blue-700 transition-colors flex items-center space-x-2 disabled:bg-blue-400 disabled:border-blue-400"
+          title="Export current dataset"
+        >
+          {isExporting ? (
+            <>
+              <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+              <span className="text-sm font-medium">Exporting...</span>
+            </>
+          ) : (
+            <>
+              <svg
+                className="w-5 h-5"
+                fill="none"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth="2"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+              >
+                <path d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2m-4-4l-4 4m0 0l-4-4m4 4V4" />
+              </svg>
+              <span className="text-sm font-medium">Export</span>
+            </>
+          )}
+        </button>
+
         {/* Refresh button */}
         <button
           onClick={handleRefresh}
@@ -656,7 +932,7 @@ export default function GraphVisualization() {
           zIndex: true,
         }}
       >
-        <LoadGraph filters={filters} />
+        <LoadGraph filters={filters} onDataLoaded={handleDataLoaded} />
         <GraphEvents />
       </SigmaContainer>
     </div>

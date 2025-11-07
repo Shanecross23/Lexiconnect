@@ -186,6 +186,7 @@ class FlexTextParser:
         gloss = ""
         pos = ""
         language = default_language
+        word_id = element.get("guid") or stable_uuid("word", parent_id, str(order))
 
         for item in element.findall("./item"):
             item_type = item.get("type", "")
@@ -217,12 +218,16 @@ class FlexTextParser:
         if morphemes_element is not None:
             for j, morph_elem in enumerate(morphemes_element.findall("./morph")):
                 morpheme = self._parse_morpheme(
-                    morph_elem, language, parent_id=parent_id, index=j, word_order=order
+                    morph_elem,
+                    language,
+                    parent_id=parent_id,
+                    word_id=word_id,
+                    index=j,
+                    word_order=order,
                 )
                 if morpheme:
                     morphemes.append(morpheme)
 
-        word_id = element.get("guid") or stable_uuid("word", parent_id, str(order))
         # Convert pos string to list (split by comma if multiple, or wrap single value)
         pos_list = [p.strip() for p in pos.split(",")] if pos else []
         return WordCreate(
@@ -239,6 +244,7 @@ class FlexTextParser:
         element,
         default_language: str,
         parent_id: str,
+        word_id: str,
         index: int = 0,
         word_order: Optional[int] = None,
     ) -> Optional[MorphemeCreate]:
@@ -281,12 +287,17 @@ class FlexTextParser:
             elif item_type == "msa":
                 msa = item_text
 
-        morpheme_id = element.get("guid") or stable_uuid(
-            "morph", parent_id, str(word_order or ""), str(index)
+        original_guid = element.get("guid") or None
+        morpheme_id = stable_uuid(
+            "morph",
+            word_id,
+            original_guid or "",
+            str(index),
         )
 
         return MorphemeCreate(
             id=morpheme_id,
+            original_guid=original_guid,
             type=morpheme_type,
             surface_form=surface_form,
             citation_form=citation_form,
@@ -396,7 +407,9 @@ def get_file_stats(file_path: str) -> Dict[str, Any]:
 # Methods for creating JSON objects from FLEx
 def _morpheme_to_dict(m) -> Dict[str, Any]:
     return {
-        "guid": getattr(m, "guid", None),
+        "id": getattr(m, "id", None),
+        "original_guid": getattr(m, "original_guid", None),
+        "guid": getattr(m, "original_guid", None) or getattr(m, "id", None),
         "type": getattr(m.type, "value", None) if getattr(m, "type", None) else None,
         "surface_form": getattr(m, "surface_form", ""),
         "citation_form": getattr(m, "citation_form", ""),
