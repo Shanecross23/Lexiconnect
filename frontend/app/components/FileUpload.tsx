@@ -45,12 +45,12 @@ export default function FileUpload({
     const files = e.dataTransfer.files;
     if (files && files.length > 0) {
       const file = files[0];
-      if (file.name.endsWith(".flextext")) {
+      if (file.name.endsWith(".flextext") || file.name.endsWith(".eaf")) {
         setSelectedFile(file);
         setUploadStatus("idle");
       } else {
         setUploadStatus("error");
-        setStatusMessage("Please upload a .flextext file");
+        setStatusMessage("Please upload a .flextext or .eaf file");
       }
     }
   }, []);
@@ -60,12 +60,12 @@ export default function FileUpload({
       const files = e.target.files;
       if (files && files.length > 0) {
         const file = files[0];
-        if (file.name.endsWith(".flextext")) {
+        if (file.name.endsWith(".flextext") || file.name.endsWith(".eaf")) {
           setSelectedFile(file);
           setUploadStatus("idle");
         } else {
           setUploadStatus("error");
-          setStatusMessage("Please upload a .flextext file");
+          setStatusMessage("Please upload a .flextext or .eaf file");
         }
       }
     },
@@ -94,7 +94,12 @@ export default function FileUpload({
         });
       }, 200);
 
-      const response = await fetch("/api/v1/linguistic/upload-flextext", {
+      const isFlextext = selectedFile.name.endsWith(".flextext");
+      const endpoint = isFlextext
+        ? "/api/v1/linguistic/upload-flextext"
+        : "/api/v1/linguistic/upload-elan";
+
+      const response = await fetch(endpoint, {
         method: "POST",
         body: formData,
       });
@@ -162,10 +167,10 @@ export default function FileUpload({
           </div>
 
           <h3 className="text-lg font-semibold text-stone-950 mb-2">
-            Upload FLEx Text File
+            Upload FLEx (.flextext) or ELAN (.eaf) File
           </h3>
           <p className="text-sm text-stone-700 mb-4">
-            Drag and drop your .flextext file here, or click to browse
+            Drag and drop your .flextext or .eaf file here, or click to browse
           </p>
 
           <label htmlFor="file-upload" className="cursor-pointer">
@@ -176,7 +181,7 @@ export default function FileUpload({
               id="file-upload"
               type="file"
               className="hidden"
-              accept=".flextext"
+              accept=".flextext,.eaf"
               onChange={handleFileSelect}
             />
           </label>
@@ -300,7 +305,7 @@ export default function FileUpload({
       </div>
 
       <div className="mt-4 text-xs text-stone-700">
-        <p>Supported file format: .flextext</p>
+        <p>Supported file formats: .flextext, .eaf</p>
         <p className="mt-1">Maximum file size: 10MB</p>
       </div>
     </div>
