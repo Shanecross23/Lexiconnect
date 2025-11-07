@@ -15,6 +15,10 @@ from app.models.linguistic import (
     PhraseCreate,
 )
 from app.parsers.flextext_parser import parse_flextext_file, get_file_stats
+from app.parsers.elan_parser import (
+    parse_eaf_file as parse_elan_eaf_file,
+    parse_eaf_to_json_string as parse_elan_eaf_to_json_string,
+)
 import tempfile
 import os
 import traceback
@@ -68,6 +72,154 @@ async def upload_flextext_file(
         logger.error(error_msg)
         logger.error(traceback.format_exc())
         raise HTTPException(status_code=400, detail=error_msg)
+
+
+@router.post("/upload-elan")
+async def upload_elan_file(
+    file: UploadFile = File(...), db=Depends(get_db_dependency)
+):
+    """Upload, parse, and persist an ELAN .eaf file.
+
+    Persists a lightweight ELAN-native structure:
+      (ElanDoc)-[:HAS_TIER]->(ElanTier)-[:HAS_ANNOTATION]->(ElanAnnotation)
+    """
+    try:
+        # Save uploaded file temporarily
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".eaf") as temp_file:
+            content = await file.read()
+            temp_file.write(content)
+            temp_file_path = temp_file.name
+
+        try:
+            # Parse the file using the ELAN parser
+            parsed_doc = parse_elan_eaf_file(temp_file_path)
+
+            # Build a minimal statistics summary from the parsed structure
+            stats = {
+                "file": parsed_doc.get("file"),
+                "num_tiers": len(parsed_doc.get("tiers", [])),
+                "num_time_slots": len(parsed_doc.get("time_slots", {})),
+                "total_annotations": sum(
+                    len(t.get("annotations", [])) for t in parsed_doc.get("tiers", [])
+                ),
+                "alignable_annotations": sum(
+                    1
+                    for t in parsed_doc.get("tiers", [])
+                    for a in t.get("annotations", [])
+                    if a.get("start_ms") is not None
+                ),
+            }
+            stats["ref_annotations"] = stats["total_annotations"] - stats["alignable_annotations"]
+
+            # Persist ELAN doc into Neo4j
+            saved_counts = _store_elan_graph(parsed_doc, db)
+
+            return {
+                "message": f"Successfully parsed and saved {file.filename}",
+                "saved": True,
+                "file_stats": stats,
+                "saved_counts": saved_counts,
+                "parsed": parsed_doc,
+            }
+
+        finally:
+            # Clean up temp file
+            os.unlink(temp_file_path)
+
+    except ValidationError as e:
+        error_msg = f"Validation error: {e.errors()}"
+        logger.error(error_msg)
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=400, detail=error_msg)
+    except Exception as e:
+        error_msg = f"Error processing ELAN file: {str(e)}"
+        logger.error(error_msg)
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=400, detail=error_msg)
+
+
+def _store_elan_graph(parsed_doc: Any, db) -> dict:
+    """Persist ELAN JSON into Neo4j as ElanDoc/ElanTier/ElanAnnotation nodes.
+
+    Returns counts of created/merged nodes and relationships.
+    """
+    file_name = parsed_doc.get("file") or ""
+    author = parsed_doc.get("author")
+    date = parsed_doc.get("date")
+
+    # Use the file name as a stable ID for the document
+    doc_id = f"elan:{file_name}"
+
+    # Create/merge ElanDoc
+    db.run(
+        """
+        MERGE (d:ElanDoc {ID: $ID})
+          ON CREATE SET d.created_at = datetime()
+        SET d.file = $file,
+            d.author = $author,
+            d.date = $date,
+            d.updated_at = datetime()
+        """,
+        ID=doc_id,
+        file=file_name,
+        author=author,
+        date=date,
+    )
+
+    tier_count = 0
+    ann_count = 0
+
+    for tier in parsed_doc.get("tiers", []):
+        tier_id = tier.get("tier_id") or ""
+        node_id = f"{doc_id}#tier:{tier_id}"
+
+        db.run(
+            """
+            MATCH (d:ElanDoc {ID: $doc_id})
+            MERGE (t:ElanTier {ID: $ID})
+              ON CREATE SET t.created_at = datetime()
+            SET t.tier_id = $tier_id,
+                t.participant = $participant,
+                t.linguistic_type_ref = $linguistic_type_ref,
+                t.parent_ref = $parent_ref,
+                t.updated_at = datetime()
+            MERGE (d)-[:HAS_TIER]->(t)
+            """,
+            doc_id=doc_id,
+            ID=node_id,
+            tier_id=tier_id,
+            participant=tier.get("participant"),
+            linguistic_type_ref=tier.get("linguistic_type_ref"),
+            parent_ref=tier.get("parent_ref"),
+        )
+        tier_count += 1
+
+        for ann in tier.get("annotations", []):
+            ann_id = ann.get("id") or ""
+            ann_node_id = f"{node_id}#ann:{ann_id}"
+
+            db.run(
+                """
+                MATCH (t:ElanTier {ID: $tier_node_id})
+                MERGE (a:ElanAnnotation {ID: $ID})
+                  ON CREATE SET a.created_at = datetime()
+                SET a.value = $value,
+                    a.start_ms = $start_ms,
+                    a.end_ms = $end_ms,
+                    a.ref_id = $ref_id,
+                    a.updated_at = datetime()
+                MERGE (t)-[:HAS_ANNOTATION]->(a)
+                """,
+                tier_node_id=node_id,
+                ID=ann_node_id,
+                value=ann.get("value"),
+                start_ms=ann.get("start_ms"),
+                end_ms=ann.get("end_ms"),
+                ref_id=ann.get("ref_id"),
+            )
+            ann_count += 1
+
+    return {"tiers": tier_count, "annotations": ann_count}
 
 
 async def _store_interlinear_text(text: InterlinearTextCreate, db) -> str:

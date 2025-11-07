@@ -113,7 +113,12 @@ export default function FileUpload({
 
       const data = await response.json();
       setUploadStatus("success");
-      setStatusMessage("File uploaded successfully!");
+      setStatusMessage(
+        (data && typeof data.message === "string" && data.message) ||
+          (isFlextext
+            ? "File uploaded successfully"
+            : "ELAN file parsed successfully")
+      );
       onUploadSuccess?.(data);
 
       // Reset after 3 seconds
