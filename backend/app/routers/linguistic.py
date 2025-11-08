@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Response, Query
-from typing import List, Optional, Any
+from typing import List, Optional, Any, Tuple
 from pydantic import ValidationError
 from app.database import get_db_dependency
 from app.models.linguistic import (
@@ -15,6 +15,12 @@ from app.models.linguistic import (
     PhraseCreate,
 )
 from app.parsers.flextext_parser import parse_flextext_file, get_file_stats
+from app.parsers.elan_parser import (
+    parse_eaf_file as parse_elan_eaf_file,
+    parse_eaf_to_json_string as parse_elan_eaf_to_json_string,
+    parse_elan_file,
+    get_elan_file_stats,
+)
 import tempfile
 import os
 import traceback
@@ -44,14 +50,27 @@ async def upload_flextext_file(
 
             # Store in graph database using correct schema
             processed_texts = []
+            skipped_texts = []
             for text in texts:
-                text_id = await _store_interlinear_text(text, db)
+                text_id, was_created = await _store_interlinear_text(text, db)
                 processed_texts.append(text_id)
+                if not was_created:
+                    skipped_texts.append({
+                        "id": text_id,
+                        "title": text.title or text_id
+                    })
+
+            message = f"Successfully uploaded and processed {file.filename}"
+            if skipped_texts:
+                skipped_count = len(skipped_texts)
+                message += f". {skipped_count} text(s) were skipped because they already exist in the database."
 
             return {
-                "message": f"Successfully uploaded and processed {file.filename}",
+                "message": message,
                 "file_stats": stats,
                 "processed_texts": processed_texts,
+                "skipped_texts": skipped_texts,
+                "skipped_count": len(skipped_texts),
             }
 
         finally:
@@ -70,8 +89,165 @@ async def upload_flextext_file(
         raise HTTPException(status_code=400, detail=error_msg)
 
 
-async def _store_interlinear_text(text: InterlinearTextCreate, db) -> str:
-    """Store an interlinear text using DATABASE.md schema relationships"""
+@router.post("/upload-elan")
+async def upload_elan_file(
+    file: UploadFile = File(...), db=Depends(get_db_dependency)
+):
+    """Upload and parse an ELAN .eaf file and store in Neo4j using DATABASE.md schema (matching Flex model)"""
+    try:
+        # Save uploaded file temporarily
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".eaf") as temp_file:
+            content = await file.read()
+            temp_file.write(content)
+            temp_file_path = temp_file.name
+
+        try:
+            # Parse the file using the new ELAN parser (returns InterlinearTextCreate objects)
+            texts = parse_elan_file(temp_file_path)
+            stats = get_elan_file_stats(temp_file_path)
+
+            # Store in graph database using correct schema (same as Flex)
+            processed_texts = []
+            skipped_texts = []
+            for text in texts:
+                text_id, was_created = await _store_interlinear_text(text, db)
+                processed_texts.append(text_id)
+                if not was_created:
+                    skipped_texts.append({
+                        "id": text_id,
+                        "title": text.title or text_id
+                    })
+
+            message = f"Successfully uploaded and processed {file.filename}"
+            if skipped_texts:
+                skipped_count = len(skipped_texts)
+                message += f". {skipped_count} text(s) were skipped because they already exist in the database."
+
+            return {
+                "message": message,
+                "file_stats": stats,
+                "processed_texts": processed_texts,
+                "skipped_texts": skipped_texts,
+                "skipped_count": len(skipped_texts),
+            }
+
+        finally:
+            # Clean up temp file
+            os.unlink(temp_file_path)
+
+    except ValidationError as e:
+        error_msg = f"Validation error: {e.errors()}"
+        logger.error(error_msg)
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=400, detail=error_msg)
+    except Exception as e:
+        error_msg = f"Error processing ELAN file: {str(e)}"
+        logger.error(error_msg)
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=400, detail=error_msg)
+
+
+def _store_elan_graph(parsed_doc: Any, db) -> dict:
+    """Persist ELAN JSON into Neo4j as ElanDoc/ElanTier/ElanAnnotation nodes.
+
+    Returns counts of created/merged nodes and relationships.
+    """
+    file_name = parsed_doc.get("file") or ""
+    author = parsed_doc.get("author")
+    date = parsed_doc.get("date")
+
+    # Use the file name as a stable ID for the document
+    doc_id = f"elan:{file_name}"
+
+    # Create/merge ElanDoc
+    db.run(
+        """
+        MERGE (d:ElanDoc {ID: $ID})
+          ON CREATE SET d.created_at = datetime()
+        SET d.file = $file,
+            d.author = $author,
+            d.date = $date,
+            d.updated_at = datetime()
+        """,
+        ID=doc_id,
+        file=file_name,
+        author=author,
+        date=date,
+    )
+
+    tier_count = 0
+    ann_count = 0
+
+    for tier in parsed_doc.get("tiers", []):
+        tier_id = tier.get("tier_id") or ""
+        node_id = f"{doc_id}#tier:{tier_id}"
+
+        db.run(
+            """
+            MATCH (d:ElanDoc {ID: $doc_id})
+            MERGE (t:ElanTier {ID: $ID})
+              ON CREATE SET t.created_at = datetime()
+            SET t.tier_id = $tier_id,
+                t.participant = $participant,
+                t.linguistic_type_ref = $linguistic_type_ref,
+                t.parent_ref = $parent_ref,
+                t.updated_at = datetime()
+            MERGE (d)-[:HAS_TIER]->(t)
+            """,
+            doc_id=doc_id,
+            ID=node_id,
+            tier_id=tier_id,
+            participant=tier.get("participant"),
+            linguistic_type_ref=tier.get("linguistic_type_ref"),
+            parent_ref=tier.get("parent_ref"),
+        )
+        tier_count += 1
+
+        for ann in tier.get("annotations", []):
+            ann_id = ann.get("id") or ""
+            ann_node_id = f"{node_id}#ann:{ann_id}"
+
+            db.run(
+                """
+                MATCH (t:ElanTier {ID: $tier_node_id})
+                MERGE (a:ElanAnnotation {ID: $ID})
+                  ON CREATE SET a.created_at = datetime()
+                SET a.value = $value,
+                    a.start_ms = $start_ms,
+                    a.end_ms = $end_ms,
+                    a.ref_id = $ref_id,
+                    a.updated_at = datetime()
+                MERGE (t)-[:HAS_ANNOTATION]->(a)
+                """,
+                tier_node_id=node_id,
+                ID=ann_node_id,
+                value=ann.get("value"),
+                start_ms=ann.get("start_ms"),
+                end_ms=ann.get("end_ms"),
+                ref_id=ann.get("ref_id"),
+            )
+            ann_count += 1
+
+    return {"tiers": tier_count, "annotations": ann_count}
+
+
+async def _store_interlinear_text(text: InterlinearTextCreate, db) -> Tuple[str, bool]:
+    """Store an interlinear text using DATABASE.md schema relationships
+    
+    Returns:
+        tuple: (text_id, was_created) where was_created is True if the text was newly created,
+               False if it already existed in the database
+    """
+    # Check if text already exists
+    existing_text = db.run(
+        """
+        MATCH (t:Text {ID: $ID})
+        RETURN t.ID as ID, t.title as title
+        """,
+        ID=text.id,
+    ).single()
+
+    was_created = existing_text is None
 
     # Create the Text node with ID property (matching schema)
     # Use MERGE directly without MATCH to avoid Cartesian products
@@ -92,11 +268,13 @@ async def _store_interlinear_text(text: InterlinearTextCreate, db) -> str:
         language=text.language,
     )
 
-    # Store sections and their components using correct relationships
-    for section in text.sections:
-        await _store_section(section, text.id, db)
+    # Only store sections if this is a new text (to avoid duplicating sections)
+    if was_created:
+        # Store sections and their components using correct relationships
+        for section in text.sections:
+            await _store_section(section, text.id, db)
 
-    return text.id
+    return (text.id, was_created)
 
 
 async def _store_section(section: SectionCreate, text_id: str, db):

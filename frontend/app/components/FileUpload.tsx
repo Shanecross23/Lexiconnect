@@ -16,9 +16,10 @@ export default function FileUpload({
   const [uploadProgress, setUploadProgress] = useState(0);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [uploadStatus, setUploadStatus] = useState<
-    "idle" | "success" | "error"
+    "idle" | "success" | "error" | "warning"
   >("idle");
   const [statusMessage, setStatusMessage] = useState("");
+  const [warningMessage, setWarningMessage] = useState("");
 
   const handleDragEnter = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -45,12 +46,12 @@ export default function FileUpload({
     const files = e.dataTransfer.files;
     if (files && files.length > 0) {
       const file = files[0];
-      if (file.name.endsWith(".flextext")) {
+      if (file.name.endsWith(".flextext") || file.name.endsWith(".eaf")) {
         setSelectedFile(file);
         setUploadStatus("idle");
       } else {
         setUploadStatus("error");
-        setStatusMessage("Please upload a .flextext file");
+        setStatusMessage("Please upload a .flextext or .eaf file");
       }
     }
   }, []);
@@ -60,12 +61,12 @@ export default function FileUpload({
       const files = e.target.files;
       if (files && files.length > 0) {
         const file = files[0];
-        if (file.name.endsWith(".flextext")) {
+        if (file.name.endsWith(".flextext") || file.name.endsWith(".eaf")) {
           setSelectedFile(file);
           setUploadStatus("idle");
         } else {
           setUploadStatus("error");
-          setStatusMessage("Please upload a .flextext file");
+          setStatusMessage("Please upload a .flextext or .eaf file");
         }
       }
     },
@@ -94,7 +95,12 @@ export default function FileUpload({
         });
       }, 200);
 
-      const response = await fetch("/api/v1/linguistic/upload-flextext", {
+      const isFlextext = selectedFile.name.endsWith(".flextext");
+      const endpoint = isFlextext
+        ? "/api/v1/linguistic/upload-flextext"
+        : "/api/v1/linguistic/upload-elan";
+
+      const response = await fetch(endpoint, {
         method: "POST",
         body: formData,
       });
@@ -107,16 +113,49 @@ export default function FileUpload({
       }
 
       const data = await response.json();
-      setUploadStatus("success");
-      setStatusMessage("File uploaded successfully!");
+      
+      // Check if there were skipped texts
+      const hasSkippedTexts = data && data.skipped_count && data.skipped_count > 0;
+      
+      if (hasSkippedTexts) {
+        setUploadStatus("warning");
+        setStatusMessage(
+          (data && typeof data.message === "string" && data.message) ||
+            (isFlextext
+              ? "File uploaded successfully"
+              : "ELAN file parsed successfully")
+        );
+        const skippedTexts = data.skipped_texts || [];
+        const skippedTitles = skippedTexts
+          .map((t: any) => t.title || t.id)
+          .slice(0, 5)
+          .join(", ");
+        const moreText = skippedTexts.length > 5 
+          ? ` and ${skippedTexts.length - 5} more` 
+          : "";
+        setWarningMessage(
+          `${data.skipped_count} text(s) were skipped because they already exist: ${skippedTitles}${moreText}`
+        );
+      } else {
+        setUploadStatus("success");
+        setStatusMessage(
+          (data && typeof data.message === "string" && data.message) ||
+            (isFlextext
+              ? "File uploaded successfully"
+              : "ELAN file parsed successfully")
+        );
+        setWarningMessage("");
+      }
       onUploadSuccess?.(data);
 
-      // Reset after 3 seconds
+      // Reset after 5 seconds (longer for warnings to allow user to read)
+      const resetDelay = hasSkippedTexts ? 5000 : 3000;
       setTimeout(() => {
         setSelectedFile(null);
         setUploadStatus("idle");
         setUploadProgress(0);
-      }, 3000);
+        setWarningMessage("");
+      }, resetDelay);
     } catch (error) {
       setUploadStatus("error");
       setStatusMessage("Upload failed. Please try again.");
@@ -130,6 +169,7 @@ export default function FileUpload({
     setSelectedFile(null);
     setUploadStatus("idle");
     setStatusMessage("");
+    setWarningMessage("");
     setUploadProgress(0);
   };
 
@@ -162,10 +202,10 @@ export default function FileUpload({
           </div>
 
           <h3 className="text-lg font-semibold text-stone-950 mb-2">
-            Upload FLEx Text File
+            Upload FLEx (.flextext) or ELAN (.eaf) File
           </h3>
           <p className="text-sm text-stone-700 mb-4">
-            Drag and drop your .flextext file here, or click to browse
+            Drag and drop your .flextext or .eaf file here, or click to browse
           </p>
 
           <label htmlFor="file-upload" className="cursor-pointer">
@@ -176,7 +216,7 @@ export default function FileUpload({
               id="file-upload"
               type="file"
               className="hidden"
-              accept=".flextext"
+              accept=".flextext,.eaf"
               onChange={handleFileSelect}
             />
           </label>
@@ -265,6 +305,45 @@ export default function FileUpload({
               </div>
             )}
 
+            {uploadStatus === "warning" && (
+              <div className="mb-4 space-y-2">
+                <div className="p-3 bg-green-100 dark:bg-green-900/30 border border-green-200 dark:border-green-800 rounded-lg">
+                  <p className="text-sm text-green-800 dark:text-green-200 flex items-center">
+                    <svg
+                      className="w-5 h-5 mr-2"
+                      fill="none"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth="2"
+                      viewBox="0 0 24 24"
+                      stroke="currentColor"
+                    >
+                      <path d="M5 13l4 4L19 7" />
+                    </svg>
+                    {statusMessage}
+                  </p>
+                </div>
+                {warningMessage && (
+                  <div className="p-3 bg-yellow-100 dark:bg-yellow-900/30 border border-yellow-200 dark:border-yellow-800 rounded-lg">
+                    <p className="text-sm text-yellow-800 dark:text-yellow-200 flex items-start">
+                      <svg
+                        className="w-5 h-5 mr-2 flex-shrink-0 mt-0.5"
+                        fill="none"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth="2"
+                        viewBox="0 0 24 24"
+                        stroke="currentColor"
+                      >
+                        <path d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                      </svg>
+                      <span>{warningMessage}</span>
+                    </p>
+                  </div>
+                )}
+              </div>
+            )}
+
             {uploadStatus === "error" && (
               <div className="mb-4 p-3 bg-red-100 dark:bg-red-900/30 border border-red-200 dark:border-red-800 rounded-lg">
                 <p className="text-sm text-red-800 dark:text-red-200 flex items-center">
@@ -286,12 +365,12 @@ export default function FileUpload({
 
             <button
               onClick={handleUpload}
-              disabled={isUploading || uploadStatus === "success"}
+              disabled={isUploading || uploadStatus === "success" || uploadStatus === "warning"}
               className="w-full py-2 px-4 border border-transparent rounded-lg text-sm font-medium text-white bg-stone-800 hover:bg-stone-900 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-stone-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
               {isUploading
                 ? "Uploading..."
-                : uploadStatus === "success"
+                : uploadStatus === "success" || uploadStatus === "warning"
                 ? "Uploaded!"
                 : "Upload File"}
             </button>
@@ -300,7 +379,7 @@ export default function FileUpload({
       </div>
 
       <div className="mt-4 text-xs text-stone-700">
-        <p>Supported file format: .flextext</p>
+        <p>Supported file formats: .flextext, .eaf</p>
         <p className="mt-1">Maximum file size: 10MB</p>
       </div>
     </div>
