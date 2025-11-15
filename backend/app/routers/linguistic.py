@@ -13,6 +13,9 @@ from app.models.linguistic import (
     MorphemeResponse,
     SectionCreate,
     PhraseCreate,
+    ConcordanceQuery,
+    ConcordanceResult,
+    GlossTarget,
 )
 from app.parsers.flextext_parser import parse_flextext_file, get_file_stats
 from app.parsers.elan_parser import (
@@ -29,6 +32,10 @@ import logging
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+GRAPH_DATA_MIN_LIMIT = 10
+GRAPH_DATA_MAX_LIMIT = 1000
+GRAPH_DATA_DEFAULT_LIMIT = 200
 
 
 @router.post("/upload-flextext")
@@ -55,10 +62,9 @@ async def upload_flextext_file(
                 text_id, was_created = await _store_interlinear_text(text, db)
                 processed_texts.append(text_id)
                 if not was_created:
-                    skipped_texts.append({
-                        "id": text_id,
-                        "title": text.title or text_id
-                    })
+                    skipped_texts.append(
+                        {"id": text_id, "title": text.title or text_id}
+                    )
 
             message = f"Successfully uploaded and processed {file.filename}"
             if skipped_texts:
@@ -90,9 +96,7 @@ async def upload_flextext_file(
 
 
 @router.post("/upload-elan")
-async def upload_elan_file(
-    file: UploadFile = File(...), db=Depends(get_db_dependency)
-):
+async def upload_elan_file(file: UploadFile = File(...), db=Depends(get_db_dependency)):
     """Upload and parse an ELAN .eaf file and store in Neo4j using DATABASE.md schema (matching Flex model)"""
     try:
         # Save uploaded file temporarily
@@ -113,10 +117,9 @@ async def upload_elan_file(
                 text_id, was_created = await _store_interlinear_text(text, db)
                 processed_texts.append(text_id)
                 if not was_created:
-                    skipped_texts.append({
-                        "id": text_id,
-                        "title": text.title or text_id
-                    })
+                    skipped_texts.append(
+                        {"id": text_id, "title": text.title or text_id}
+                    )
 
             message = f"Successfully uploaded and processed {file.filename}"
             if skipped_texts:
@@ -233,7 +236,7 @@ def _store_elan_graph(parsed_doc: Any, db) -> dict:
 
 async def _store_interlinear_text(text: InterlinearTextCreate, db) -> Tuple[str, bool]:
     """Store an interlinear text using DATABASE.md schema relationships
-    
+
     Returns:
         tuple: (text_id, was_created) where was_created is True if the text was newly created,
                False if it already existed in the database
@@ -623,6 +626,188 @@ async def search_morphemes(
         raise HTTPException(status_code=400, detail=str(e))
 
 
+@router.post("/concordance", response_model=List[ConcordanceResult])
+async def concordance_search(
+    query: ConcordanceQuery, response: Response, db=Depends(get_db_dependency)
+):
+    """Concordance search: find patterns across texts with context window (KWIC format)"""
+    try:
+        results = []
+
+        if query.target_type == GlossTarget.MORPHEME:
+            # Search for morphemes matching the pattern
+            # First, find all matching morphemes and their words
+            cypher_query = """
+            MATCH (m:Morpheme)
+            WHERE (m.surface_form CONTAINS $target OR m.citation_form CONTAINS $target)
+            AND ($language IS NULL OR m.language = $language)
+            MATCH (w:Word)-[:WORD_MADE_OF]->(m)
+            MATCH (ph:Phrase)-[r:PHRASE_COMPOSED_OF]->(w)
+            MATCH (t:Text)-[:SECTION_PART_OF_TEXT]->(s:Section)-[:PHRASE_IN_SECTION]->(ph)
+            WITH ph, w, m, r.Order as word_order, t, s
+            ORDER BY word_order
+            OPTIONAL MATCH (g:Gloss)-[:ANALYZES]->(m)
+            WITH ph, w, m, word_order, t, s, collect(DISTINCT g.annotation) as glosses
+            RETURN 
+                ph.ID as phrase_id,
+                COALESCE(t.title, '') as text_title,
+                COALESCE(s.ID, '') as segnum,
+                m.surface_form as target,
+                word_order as word_index,
+                [g IN glosses WHERE g IS NOT NULL] as glosses
+            ORDER BY t.title, segnum, word_order
+            LIMIT $limit
+            """
+
+            params = {
+                "target": query.target,
+                "language": query.language,
+                "limit": query.limit,
+            }
+
+            result = db.run(cypher_query, **params)
+            for record in result:
+                # Get context words for this phrase
+                phrase_id = record["phrase_id"]
+                word_order = record["word_index"]
+
+                # Get all words in the phrase for context
+                context_query = """
+                MATCH (ph:Phrase {ID: $phrase_id})-[r:PHRASE_COMPOSED_OF]->(w:Word)
+                WITH w, r.Order as order
+                ORDER BY order
+                RETURN collect(w.surface_form) as words, collect(order) as orders
+                """
+                context_result = db.run(context_query, phrase_id=phrase_id).single()
+
+                if context_result:
+                    words = context_result["words"] or []
+                    orders = context_result["orders"] or []
+                    try:
+                        target_idx = orders.index(word_order)
+                        left_context = (
+                            words[max(0, target_idx - query.context_size) : target_idx]
+                            if target_idx > 0
+                            else []
+                        )
+                        right_context = (
+                            words[target_idx + 1 : target_idx + 1 + query.context_size]
+                            if target_idx < len(words) - 1
+                            else []
+                        )
+                    except ValueError:
+                        left_context = []
+                        right_context = []
+                else:
+                    left_context = []
+                    right_context = []
+
+                glosses = record.get("glosses") or []
+                results.append(
+                    ConcordanceResult(
+                        target=record["target"],
+                        left_context=left_context,
+                        right_context=right_context,
+                        phrase_id=phrase_id,
+                        text_title=record["text_title"],
+                        segnum=record["segnum"],
+                        word_index=word_order,
+                        glosses=glosses if glosses else None,
+                    )
+                )
+
+        elif query.target_type == GlossTarget.WORD:
+            # Search for words matching the pattern
+            cypher_query = """
+            MATCH (w:Word)
+            WHERE (w.surface_form CONTAINS $target OR w.gloss CONTAINS $target)
+            AND ($language IS NULL OR w.language = $language)
+            MATCH (ph:Phrase)-[r:PHRASE_COMPOSED_OF]->(w)
+            MATCH (t:Text)-[:SECTION_PART_OF_TEXT]->(s:Section)-[:PHRASE_IN_SECTION]->(ph)
+            WITH ph, w, r.Order as word_order, t, s
+            ORDER BY word_order
+            OPTIONAL MATCH (g:Gloss)-[:ANALYZES]->(w)
+            WITH ph, w, word_order, t, s, collect(DISTINCT g.annotation) as glosses
+            RETURN 
+                ph.ID as phrase_id,
+                COALESCE(t.title, '') as text_title,
+                COALESCE(s.ID, '') as segnum,
+                w.surface_form as target,
+                word_order as word_index,
+                [g IN glosses WHERE g IS NOT NULL] as glosses
+            ORDER BY t.title, segnum, word_order
+            LIMIT $limit
+            """
+
+            params = {
+                "target": query.target,
+                "language": query.language,
+                "limit": query.limit,
+            }
+
+            result = db.run(cypher_query, **params)
+            for record in result:
+                # Get context words for this phrase
+                phrase_id = record["phrase_id"]
+                word_order = record["word_index"]
+
+                # Get all words in the phrase for context
+                context_query = """
+                MATCH (ph:Phrase {ID: $phrase_id})-[r:PHRASE_COMPOSED_OF]->(w:Word)
+                WITH w, r.Order as order
+                ORDER BY order
+                RETURN collect(w.surface_form) as words, collect(order) as orders
+                """
+                context_result = db.run(context_query, phrase_id=phrase_id).single()
+
+                if context_result:
+                    words = context_result["words"] or []
+                    orders = context_result["orders"] or []
+                    try:
+                        target_idx = orders.index(word_order)
+                        left_context = (
+                            words[max(0, target_idx - query.context_size) : target_idx]
+                            if target_idx > 0
+                            else []
+                        )
+                        right_context = (
+                            words[target_idx + 1 : target_idx + 1 + query.context_size]
+                            if target_idx < len(words) - 1
+                            else []
+                        )
+                    except ValueError:
+                        left_context = []
+                        right_context = []
+                else:
+                    left_context = []
+                    right_context = []
+
+                glosses = record.get("glosses") or []
+                results.append(
+                    ConcordanceResult(
+                        target=record["target"],
+                        left_context=left_context,
+                        right_context=right_context,
+                        phrase_id=phrase_id,
+                        text_title=record["text_title"],
+                        segnum=record["segnum"],
+                        word_index=word_order,
+                        glosses=glosses if glosses else None,
+                    )
+                )
+
+        total = len(results)
+        response.headers["X-Total-Count"] = str(total)
+        response.headers["X-Limit"] = str(query.limit)
+
+        return results
+
+    except Exception as e:
+        logger.error(f"Error in concordance search: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @router.get("/texts", response_model=List[InterlinearTextResponse])
 async def get_texts(
     language: Optional[str] = None,
@@ -682,32 +867,49 @@ async def get_texts(
 async def get_database_stats(db=Depends(get_db_dependency)):
     """Get overall database statistics"""
     try:
-        cypher_query = """
-            MATCH (t:Text) WITH COUNT(t) as text_count
-            MATCH (s:Section) WITH text_count, COUNT(s) as section_count
-            MATCH (p:Phrase) WITH text_count, section_count, COUNT(p) as phrase_count
-            MATCH (w:Word) WITH text_count, section_count, phrase_count, COUNT(w) as word_count
-            MATCH (m:Morpheme) WITH text_count, section_count, phrase_count, word_count, COUNT(m) as morpheme_count
-            MATCH (g:Gloss) WITH text_count, section_count, phrase_count, word_count, morpheme_count, COUNT(g) as gloss_count
-            RETURN text_count, section_count, phrase_count, word_count, morpheme_count, gloss_count
-        """
+        # Use separate queries to avoid timeout issues
+        text_count = (
+            db.run("MATCH (t:Text) RETURN count(t) as count").single()["count"] or 0
+        )
+        section_count = (
+            db.run("MATCH (s:Section) RETURN count(s) as count").single()["count"] or 0
+        )
+        phrase_count = (
+            db.run("MATCH (p:Phrase) RETURN count(p) as count").single()["count"] or 0
+        )
+        word_count = (
+            db.run("MATCH (w:Word) RETURN count(w) as count").single()["count"] or 0
+        )
+        morpheme_count = (
+            db.run("MATCH (m:Morpheme) RETURN count(m) as count").single()["count"] or 0
+        )
+        gloss_count = (
+            db.run("MATCH (g:Gloss) RETURN count(g) as count").single()["count"] or 0
+        )
 
-        result = db.run(cypher_query)
-        record = result.single()
+        # Count relationships - this can be expensive, so we'll make it optional
+        try:
+            relationship_count = (
+                db.run("MATCH ()-[r]->() RETURN count(r) as count").single()["count"]
+                or 0
+            )
+        except Exception:
+            # If counting all relationships times out, estimate or skip
+            relationship_count = None
 
-        if not record:
-            return {
-                "text_count": 0,
-                "section_count": 0,
-                "phrase_count": 0,
-                "word_count": 0,
-                "morpheme_count": 0,
-                "gloss_count": 0,
-            }
-
-        return dict(record)
+        return {
+            "text_count": text_count,
+            "section_count": section_count,
+            "phrase_count": phrase_count,
+            "word_count": word_count,
+            "morpheme_count": morpheme_count,
+            "gloss_count": gloss_count,
+            "relationship_count": relationship_count,
+        }
 
     except Exception as e:
+        logger.error(f"Error fetching stats: {str(e)}")
+        logger.error(traceback.format_exc())
         raise HTTPException(status_code=400, detail=str(e))
 
 
@@ -765,7 +967,7 @@ async def get_graph_data(
     text_id: Optional[str] = None,
     language: Optional[str] = None,
     node_types: Optional[str] = None,  # Comma-separated: "Text,Word,Gloss"
-    limit: int = 50,
+    limit: int = GRAPH_DATA_DEFAULT_LIMIT,
     db=Depends(get_db_dependency),
 ):
     """Get graph data for visualization with nodes and edges
@@ -774,8 +976,9 @@ async def get_graph_data(
         text_id: Filter to specific text (shows all related nodes)
         language: Filter by language code
         node_types: Comma-separated node types to include (e.g. "Word,Gloss,Morpheme")
-        limit: Max nodes per type (default 50)
+        limit: Max nodes per type (default 200, clamped between 10 and 1000)
     """
+    limit = max(GRAPH_DATA_MIN_LIMIT, min(limit, GRAPH_DATA_MAX_LIMIT))
     try:
         nodes = []
         edges = []
@@ -784,30 +987,48 @@ async def get_graph_data(
         # If text_id is provided, filter by that text, otherwise get a sample
         if text_id:
             cypher_query = """
-                // Get Text node
+                // Get Text node and all related entities
                 MATCH (t:Text {ID: $text_id})
                 OPTIONAL MATCH (t)-[:SECTION_PART_OF_TEXT]->(s:Section)
                 OPTIONAL MATCH (s)-[:PHRASE_IN_SECTION]->(ph:Phrase)
                 OPTIONAL MATCH (s)-[:SECTION_CONTAINS]->(w:Word)
-                OPTIONAL MATCH (ph)-[r:PHRASE_COMPOSED_OF]->(pw:Word)
+                OPTIONAL MATCH (ph)-[rc:PHRASE_COMPOSED_OF]->(pw:Word)
                 OPTIONAL MATCH (w)-[:WORD_MADE_OF]->(m:Morpheme)
                 OPTIONAL MATCH (pw)-[:WORD_MADE_OF]->(pm:Morpheme)
-                OPTIONAL MATCH (g:Gloss)-[:ANALYZES]->(analyzed)
-                WHERE analyzed IN [w, pw, m, pm, ph]
+                
+                // Get all words (combined list for gloss matching)
+                WITH t, s, ph, w, pw, m, pm, rc,
+                     collect(DISTINCT w) + collect(DISTINCT pw) as allWords,
+                     collect(DISTINCT m) + collect(DISTINCT pm) as allMorphemes
+                
+                // Get all glosses that analyze words in this text
+                OPTIONAL MATCH (gw:Gloss)-[:ANALYZES]->(analyzedW:Word)
+                WHERE analyzedW IN allWords
+                
+                // Get all glosses that analyze morphemes in this text  
+                OPTIONAL MATCH (gm:Gloss)-[:ANALYZES]->(analyzedM:Morpheme)
+                WHERE analyzedM IN allMorphemes
+                
+                // Get all glosses that analyze phrases in this text
+                OPTIONAL MATCH (gph:Gloss)-[:ANALYZES]->(analyzedPh:Phrase)
+                WHERE analyzedPh = ph
                 
                 // Collect all nodes and relationships
                 WITH collect(DISTINCT t) + collect(DISTINCT s) + collect(DISTINCT ph) + 
-                     collect(DISTINCT w) + collect(DISTINCT pw) + collect(DISTINCT m) + 
-                     collect(DISTINCT pm) + collect(DISTINCT g) as allNodes,
+                     collect(DISTINCT w) + collect(DISTINCT pw) + 
+                     collect(DISTINCT m) + collect(DISTINCT pm) + 
+                     collect(DISTINCT gw) + collect(DISTINCT gm) + collect(DISTINCT gph) as allNodes,
                      collect(DISTINCT {source: id(t), target: id(s), type: 'SECTION_PART_OF_TEXT'}) +
                      collect(DISTINCT {source: id(s), target: id(ph), type: 'PHRASE_IN_SECTION'}) +
                      collect(DISTINCT {source: id(s), target: id(w), type: 'SECTION_CONTAINS'}) +
-                     collect(DISTINCT {source: id(ph), target: id(pw), type: 'PHRASE_COMPOSED_OF', order: r.Order}) +
+                     collect(DISTINCT {source: id(ph), target: id(pw), type: 'PHRASE_COMPOSED_OF', order: rc.Order}) +
                      collect(DISTINCT {source: id(w), target: id(m), type: 'WORD_MADE_OF'}) +
                      collect(DISTINCT {source: id(pw), target: id(pm), type: 'WORD_MADE_OF'}) +
-                     collect(DISTINCT {source: id(g), target: id(analyzed), type: 'ANALYZES'}) as allEdges
+                     collect(DISTINCT {source: id(gw), target: id(analyzedW), type: 'ANALYZES'}) +
+                     collect(DISTINCT {source: id(gm), target: id(analyzedM), type: 'ANALYZES'}) +
+                     collect(DISTINCT {source: id(gph), target: id(analyzedPh), type: 'ANALYZES'}) as allEdges
                 
-                RETURN allNodes, allEdges
+                RETURN allNodes, [edge IN allEdges WHERE edge.source IS NOT NULL AND edge.target IS NOT NULL] as allEdges
             """
             params = {"text_id": text_id}
         else:
@@ -821,13 +1042,19 @@ async def get_graph_data(
 
             if not node_types or "Text" in allowed_types:
                 lang_filter = "WHERE t.language = $language" if language else ""
-                query_parts.append(f"CALL {{ MATCH (t:Text) {lang_filter} RETURN t }}")
+                query_parts.append(
+                    f"CALL {{ MATCH (t:Text) {lang_filter} RETURN t LIMIT $limit }}"
+                )
 
             if not node_types or "Section" in allowed_types:
-                query_parts.append("CALL { MATCH (s:Section) RETURN s LIMIT 10 }")
+                query_parts.append(
+                    f"CALL {{ MATCH (s:Section) RETURN s LIMIT $limit }}"
+                )
 
             if not node_types or "Phrase" in allowed_types:
-                query_parts.append("CALL { MATCH (ph:Phrase) RETURN ph LIMIT 20 }")
+                query_parts.append(
+                    f"CALL {{ MATCH (ph:Phrase) RETURN ph LIMIT $limit }}"
+                )
 
             if not node_types or "Word" in allowed_types:
                 lang_filter = "WHERE w.language = $language" if language else ""
@@ -838,11 +1065,11 @@ async def get_graph_data(
             if not node_types or "Morpheme" in allowed_types:
                 lang_filter = "WHERE m.language = $language" if language else ""
                 query_parts.append(
-                    f"CALL {{ MATCH (m:Morpheme) {lang_filter} RETURN m LIMIT 30 }}"
+                    f"CALL {{ MATCH (m:Morpheme) {lang_filter} RETURN m LIMIT $limit }}"
                 )
 
             if not node_types or "Gloss" in allowed_types:
-                query_parts.append("CALL { MATCH (g:Gloss) RETURN g LIMIT 40 }")
+                query_parts.append(f"CALL {{ MATCH (g:Gloss) RETURN g LIMIT $limit }}")
 
             # Collect node variables
             node_vars = []
@@ -869,17 +1096,17 @@ async def get_graph_data(
                 UNWIND allNodes as node
                 WITH collect(DISTINCT node) as uniqueNodes
                 
-                // Now get relationships between these nodes
+                // Get all relationships where source is in uniqueNodes
+                // This includes ANALYZES relationships from Gloss nodes even if target is not in uniqueNodes
                 UNWIND uniqueNodes as n1
                 OPTIONAL MATCH (n1)-[r]->(n2)
-                WHERE n2 IN uniqueNodes
+                WHERE n1 IN uniqueNodes AND (n2 IN uniqueNodes OR type(r) = 'ANALYZES')
                 
-                WITH uniqueNodes,
-                     collect(DISTINCT {{
-                         source: id(startNode(r)), 
-                         target: id(endNode(r)), 
-                         type: type(r)
-                     }}) as edges
+                WITH uniqueNodes, collect(DISTINCT {{
+                    source: id(startNode(r)), 
+                    target: id(endNode(r)), 
+                    type: type(r)
+                }}) as edges
                 
                 RETURN uniqueNodes as allNodes,
                        [edge IN edges WHERE edge.source IS NOT NULL AND edge.target IS NOT NULL] as allEdges
@@ -987,6 +1214,8 @@ async def get_graph_data(
         }
 
     except Exception as e:
+        logger.error(f"Error fetching graph data: {str(e)}")
+        logger.error(traceback.format_exc())
         raise HTTPException(
             status_code=400, detail=f"Error fetching graph data: {str(e)}"
         )

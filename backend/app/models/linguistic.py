@@ -227,6 +227,7 @@ class ConcordanceResult(BaseSchema):
     segnum: str
     word_index: Optional[int] = None
     token_span: Optional[Tuple[int, int]] = None
+    glosses: Optional[List[str]] = None
 
 
 class FrequencyQuery(BaseSchema):

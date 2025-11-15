@@ -9,6 +9,7 @@ interface FilterOptions {
 }
 
 interface GraphFiltersProps {
+  initialLimit?: number;
   onFilterChange: (filters: {
     textId?: string;
     language?: string;
@@ -17,7 +18,11 @@ interface GraphFiltersProps {
   }) => void;
 }
 
-export default function GraphFilters({ onFilterChange }: GraphFiltersProps) {
+export default function GraphFilters({
+  onFilterChange,
+  initialLimit,
+}: GraphFiltersProps) {
+  const resolvedInitialLimit = initialLimit ?? 200;
   const [filterOptions, setFilterOptions] = useState<FilterOptions | null>(
     null
   );
@@ -26,7 +31,7 @@ export default function GraphFilters({ onFilterChange }: GraphFiltersProps) {
   const [selectedNodeTypes, setSelectedNodeTypes] = useState<Set<string>>(
     new Set()
   );
-  const [limit, setLimit] = useState<number>(50);
+  const [limit, setLimit] = useState<number>(resolvedInitialLimit);
   const [hierarchyLevel, setHierarchyLevel] = useState<string>("all");
   const [isOpen, setIsOpen] = useState(false);
 
@@ -88,9 +93,14 @@ export default function GraphFilters({ onFilterChange }: GraphFiltersProps) {
     setSelectedText("");
     setSelectedLanguage("");
     setSelectedNodeTypes(new Set());
-    setLimit(50);
+    setLimit(resolvedInitialLimit);
     setHierarchyLevel("all");
-    onFilterChange({ limit: 50 });
+    onFilterChange({
+      textId: undefined,
+      language: undefined,
+      nodeTypes: undefined,
+      limit: resolvedInitialLimit,
+    });
   };
 
   const toggleNodeType = (nodeType: string) => {
