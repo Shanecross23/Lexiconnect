@@ -979,6 +979,15 @@ async def get_graph_data(
         limit: Max nodes per type (default 200, clamped between 10 and 1000)
     """
     limit = max(GRAPH_DATA_MIN_LIMIT, min(limit, GRAPH_DATA_MAX_LIMIT))
+
+    # Helper class for creating record objects
+    class GraphRecord:
+        def __init__(self, nodes, edges):
+            self.data = {"allNodes": nodes, "allEdges": edges}
+
+        def __getitem__(self, key):
+            return self.data[key]
+
     try:
         nodes = []
         edges = []
@@ -986,136 +995,106 @@ async def get_graph_data(
         # Query to get all nodes and relationships
         # If text_id is provided, filter by that text, otherwise get a sample
         if text_id:
+            # Much simpler query - get nodes and edges separately
+            # First get all nodes related to this text
             cypher_query = """
-                // Get Text node and all related entities
-                MATCH (t:Text {ID: $text_id})
-                OPTIONAL MATCH (t)-[:SECTION_PART_OF_TEXT]->(s:Section)
-                OPTIONAL MATCH (s)-[:PHRASE_IN_SECTION]->(ph:Phrase)
-                OPTIONAL MATCH (s)-[:SECTION_CONTAINS]->(w:Word)
-                OPTIONAL MATCH (ph)-[rc:PHRASE_COMPOSED_OF]->(pw:Word)
-                OPTIONAL MATCH (w)-[:WORD_MADE_OF]->(m:Morpheme)
-                OPTIONAL MATCH (pw)-[:WORD_MADE_OF]->(pm:Morpheme)
-                
-                // Get all words (combined list for gloss matching)
-                WITH t, s, ph, w, pw, m, pm, rc,
-                     collect(DISTINCT w) + collect(DISTINCT pw) as allWords,
-                     collect(DISTINCT m) + collect(DISTINCT pm) as allMorphemes
-                
-                // Get all glosses that analyze words in this text
-                OPTIONAL MATCH (gw:Gloss)-[:ANALYZES]->(analyzedW:Word)
-                WHERE analyzedW IN allWords
-                
-                // Get all glosses that analyze morphemes in this text  
-                OPTIONAL MATCH (gm:Gloss)-[:ANALYZES]->(analyzedM:Morpheme)
-                WHERE analyzedM IN allMorphemes
-                
-                // Get all glosses that analyze phrases in this text
-                OPTIONAL MATCH (gph:Gloss)-[:ANALYZES]->(analyzedPh:Phrase)
-                WHERE analyzedPh = ph
-                
-                // Collect all nodes and relationships
-                WITH collect(DISTINCT t) + collect(DISTINCT s) + collect(DISTINCT ph) + 
-                     collect(DISTINCT w) + collect(DISTINCT pw) + 
-                     collect(DISTINCT m) + collect(DISTINCT pm) + 
-                     collect(DISTINCT gw) + collect(DISTINCT gm) + collect(DISTINCT gph) as allNodes,
-                     collect(DISTINCT {source: id(t), target: id(s), type: 'SECTION_PART_OF_TEXT'}) +
-                     collect(DISTINCT {source: id(s), target: id(ph), type: 'PHRASE_IN_SECTION'}) +
-                     collect(DISTINCT {source: id(s), target: id(w), type: 'SECTION_CONTAINS'}) +
-                     collect(DISTINCT {source: id(ph), target: id(pw), type: 'PHRASE_COMPOSED_OF', order: rc.Order}) +
-                     collect(DISTINCT {source: id(w), target: id(m), type: 'WORD_MADE_OF'}) +
-                     collect(DISTINCT {source: id(pw), target: id(pm), type: 'WORD_MADE_OF'}) +
-                     collect(DISTINCT {source: id(gw), target: id(analyzedW), type: 'ANALYZES'}) +
-                     collect(DISTINCT {source: id(gm), target: id(analyzedM), type: 'ANALYZES'}) +
-                     collect(DISTINCT {source: id(gph), target: id(analyzedPh), type: 'ANALYZES'}) as allEdges
-                
-                RETURN allNodes, [edge IN allEdges WHERE edge.source IS NOT NULL AND edge.target IS NOT NULL] as allEdges
+                MATCH path = (t:Text {ID: $text_id})-[*0..3]->(n)
+                WITH DISTINCT n as node
+                LIMIT $limit
+                RETURN collect(node) as allNodes
             """
-            params = {"text_id": text_id}
+
+            nodes_result = db.run(cypher_query, text_id=text_id, limit=limit * 5)
+            nodes_record = nodes_result.single()
+
+            if not nodes_record or not nodes_record["allNodes"]:
+                return {"nodes": [], "edges": []}
+
+            all_node_objects = nodes_record["allNodes"]
+            node_ids = [node.id for node in all_node_objects if node is not None]
+
+            # Now get edges between these nodes
+            edges_query = """
+                MATCH (n1)-[r]->(n2)
+                WHERE id(n1) IN $node_ids AND id(n2) IN $node_ids
+                RETURN collect({
+                    source: id(n1),
+                    target: id(n2),
+                    type: type(r)
+                }) as allEdges
+            """
+            edges_result = db.run(edges_query, node_ids=node_ids)
+            edges_record = edges_result.single()
+
+            all_edges = edges_record["allEdges"] if edges_record else []
+
+            # Create a record structure for compatibility with rest of code
+            record = GraphRecord(all_node_objects, all_edges)
         else:
-            # Parse node types filter
+            # Parse node types filter - use simple query to get sample nodes
             allowed_types = set()
             if node_types:
                 allowed_types = set(t.strip() for t in node_types.split(","))
 
-            # Build query parts based on filters
-            query_parts = []
+            # Get sample nodes of each type separately (much simpler and faster)
+            all_node_objects = []
 
             if not node_types or "Text" in allowed_types:
                 lang_filter = "WHERE t.language = $language" if language else ""
-                query_parts.append(
-                    f"CALL {{ MATCH (t:Text) {lang_filter} RETURN t LIMIT $limit }}"
-                )
+                query = f"MATCH (t:Text) {lang_filter} RETURN t LIMIT $limit"
+                result = db.run(query, limit=limit, language=language)
+                all_node_objects.extend([record["t"] for record in result])
 
             if not node_types or "Section" in allowed_types:
-                query_parts.append(
-                    f"CALL {{ MATCH (s:Section) RETURN s LIMIT $limit }}"
-                )
+                query = "MATCH (s:Section) RETURN s LIMIT $limit"
+                result = db.run(query, limit=limit)
+                all_node_objects.extend([record["s"] for record in result])
 
             if not node_types or "Phrase" in allowed_types:
-                query_parts.append(
-                    f"CALL {{ MATCH (ph:Phrase) RETURN ph LIMIT $limit }}"
-                )
+                query = "MATCH (ph:Phrase) RETURN ph LIMIT $limit"
+                result = db.run(query, limit=limit)
+                all_node_objects.extend([record["ph"] for record in result])
 
             if not node_types or "Word" in allowed_types:
                 lang_filter = "WHERE w.language = $language" if language else ""
-                query_parts.append(
-                    f"CALL {{ MATCH (w:Word) {lang_filter} RETURN w LIMIT $limit }}"
-                )
+                query = f"MATCH (w:Word) {lang_filter} RETURN w LIMIT $limit"
+                result = db.run(query, limit=limit, language=language)
+                all_node_objects.extend([record["w"] for record in result])
 
             if not node_types or "Morpheme" in allowed_types:
                 lang_filter = "WHERE m.language = $language" if language else ""
-                query_parts.append(
-                    f"CALL {{ MATCH (m:Morpheme) {lang_filter} RETURN m LIMIT $limit }}"
-                )
+                query = f"MATCH (m:Morpheme) {lang_filter} RETURN m LIMIT $limit"
+                result = db.run(query, limit=limit, language=language)
+                all_node_objects.extend([record["m"] for record in result])
 
             if not node_types or "Gloss" in allowed_types:
-                query_parts.append(f"CALL {{ MATCH (g:Gloss) RETURN g LIMIT $limit }}")
+                query = "MATCH (g:Gloss) RETURN g LIMIT $limit"
+                result = db.run(query, limit=limit)
+                all_node_objects.extend([record["g"] for record in result])
 
-            # Collect node variables
-            node_vars = []
-            if not node_types or "Text" in allowed_types:
-                node_vars.append("collect(DISTINCT t)")
-            if not node_types or "Section" in allowed_types:
-                node_vars.append("collect(DISTINCT s)")
-            if not node_types or "Phrase" in allowed_types:
-                node_vars.append("collect(DISTINCT ph)")
-            if not node_types or "Word" in allowed_types:
-                node_vars.append("collect(DISTINCT w)")
-            if not node_types or "Morpheme" in allowed_types:
-                node_vars.append("collect(DISTINCT m)")
-            if not node_types or "Gloss" in allowed_types:
-                node_vars.append("collect(DISTINCT g)")
+            if not all_node_objects:
+                return {"nodes": [], "edges": []}
 
-            cypher_query = (
-                "\n".join(query_parts)
-                + f"""
-                
-                // Get all relationships between these nodes
-                WITH {" + ".join(node_vars)} as allNodes
-                
-                UNWIND allNodes as node
-                WITH collect(DISTINCT node) as uniqueNodes
-                
-                // Get all relationships where source is in uniqueNodes
-                // This includes ANALYZES relationships from Gloss nodes even if target is not in uniqueNodes
-                UNWIND uniqueNodes as n1
-                OPTIONAL MATCH (n1)-[r]->(n2)
-                WHERE n1 IN uniqueNodes AND (n2 IN uniqueNodes OR type(r) = 'ANALYZES')
-                
-                WITH uniqueNodes, collect(DISTINCT {{
-                    source: id(startNode(r)), 
-                    target: id(endNode(r)), 
+            # Get node IDs for edge query
+            node_ids = [node.id for node in all_node_objects if node is not None]
+
+            # Get edges between these nodes (simple query)
+            edges_query = """
+                MATCH (n1)-[r]->(n2)
+                WHERE id(n1) IN $node_ids AND id(n2) IN $node_ids
+                RETURN collect({
+                    source: id(n1),
+                    target: id(n2),
                     type: type(r)
-                }}) as edges
-                
-                RETURN uniqueNodes as allNodes,
-                       [edge IN edges WHERE edge.source IS NOT NULL AND edge.target IS NOT NULL] as allEdges
+                }) as allEdges
             """
-            )
-            params = {"limit": limit, "language": language}
+            edges_result = db.run(edges_query, node_ids=node_ids)
+            edges_record = edges_result.single()
 
-        result = db.run(cypher_query, **params)
-        record = result.single()
+            all_edges = edges_record["allEdges"] if edges_record else []
+
+            # Create a record structure for compatibility with rest of code
+            record = GraphRecord(all_node_objects, all_edges)
 
         if not record:
             # Return empty graph if no data

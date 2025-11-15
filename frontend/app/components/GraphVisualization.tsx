@@ -94,7 +94,9 @@ async function fetchGraphData(options: GraphFetchOptions = {}) {
     const url = `/api/v1/linguistic/graph-data?${params.toString()}`;
     const response = await fetch(url, { signal });
     if (!response.ok) {
-      throw new Error("Failed to fetch graph data");
+      throw new Error(
+        `Failed to fetch graph data: ${response.status} ${response.statusText}`
+      );
     }
     const data = await response.json();
     console.log("Fetched graph data:", {
@@ -104,11 +106,22 @@ async function fetchGraphData(options: GraphFetchOptions = {}) {
     });
     return data;
   } catch (error) {
-    const err = error as { name?: string };
+    const err = error as { name?: string; message?: string };
     if (err?.name === "AbortError") {
       throw error;
     }
     console.error("Error fetching graph data:", error);
+    // Re-throw connection errors so they can be handled by the UI
+    if (
+      err?.message?.includes("ECONNRESET") ||
+      err?.message?.includes("socket hang up") ||
+      err?.message?.includes("Failed to fetch") ||
+      err?.name === "TypeError"
+    ) {
+      throw new Error(
+        "Backend connection failed. Please ensure the backend server is running."
+      );
+    }
     return { nodes: [], edges: [] };
   }
 }
@@ -241,7 +254,8 @@ function buildGraphFromData(data: any) {
             const edgeId =
               edge.id || `edge-${edge.source}-${edge.target}-${index}`;
 
-            graph.addEdge(sourceId, targetId, {
+            // For MultiDirectedGraph, pass the edge key as first parameter to allow duplicate edges
+            graph.addEdge(edgeId, sourceId, targetId, {
               size: edgeSize,
               color: edgeColor,
               type: "line", // Explicitly set edge type
@@ -309,9 +323,11 @@ function buildGraphFromData(data: any) {
 function LoadGraph({
   filters,
   onDataLoaded,
+  onError,
 }: {
   filters: GraphQueryFilters;
   onDataLoaded?: (data: any) => void;
+  onError?: (error: Error) => void;
 }) {
   const loadGraph = useLoadGraph();
 
@@ -332,17 +348,20 @@ function LoadGraph({
         const graph = buildGraphFromData(data);
         loadGraph(graph);
       } catch (error) {
-        const err = error as { name?: string };
+        const err = error as { name?: string; message?: string };
         if (err?.name === "AbortError") {
           return;
         }
         console.error("Error loading graph data:", error);
+        if (err?.message && onError) {
+          onError(new Error(err.message));
+        }
       }
     };
 
     loadData();
     return () => controller.abort();
-  }, [filters, loadGraph, onDataLoaded]);
+  }, [filters, loadGraph, onDataLoaded, onError]);
 
   return null;
 }
@@ -553,6 +572,7 @@ export default function GraphVisualization() {
     limit: DEFAULT_GRAPH_LIMIT,
   });
   const [hasData, setHasData] = useState<boolean | null>(null);
+  const [connectionError, setConnectionError] = useState<string | null>(null);
 
   const showExportFeedback = useCallback(
     (type: ExportFeedback["type"], message: string) => {
@@ -572,6 +592,7 @@ export default function GraphVisualization() {
   }, [exportFeedback]);
 
   const handleRefresh = () => {
+    setConnectionError(null);
     setRefreshKey((prev) => prev + 1);
   };
 
@@ -641,6 +662,7 @@ export default function GraphVisualization() {
     const nodeCount = data?.nodes?.length || 0;
     const edgeCount = data?.edges?.length || 0;
     setHasData(nodeCount > 0 || edgeCount > 0);
+    setConnectionError(null); // Clear any previous errors on successful load
 
     if (data?.nodes && Array.isArray(data.nodes)) {
       const textNode = data.nodes.find((node: any) => node?.type === "Text");
@@ -654,6 +676,11 @@ export default function GraphVisualization() {
         }
       }
     }
+  }, []);
+
+  const handleGraphError = useCallback((error: Error) => {
+    setConnectionError(error.message);
+    setHasData(false);
   }, []);
 
   const triggerExport = useCallback(
@@ -1006,14 +1033,70 @@ export default function GraphVisualization() {
           zIndex: true,
         }}
       >
-        <LoadGraph filters={graphFilters} onDataLoaded={handleDataLoaded} />
+        <LoadGraph
+          filters={graphFilters}
+          onDataLoaded={handleDataLoaded}
+          onError={handleGraphError}
+        />
         <GraphEvents />
         {hasData && <ZoomControls />}
         {hasData && <GraphLegend />}
       </SigmaContainer>
 
+      {/* Connection Error Overlay */}
+      {connectionError && (
+        <div className="absolute inset-0 flex items-center justify-center bg-stone-50/95 z-10">
+          <div className="text-center max-w-md px-6">
+            <div className="mb-4 flex justify-center">
+              <div className="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center">
+                <svg
+                  className="w-8 h-8 text-red-600"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"
+                  />
+                </svg>
+              </div>
+            </div>
+            <h3 className="text-lg font-semibold text-stone-900 mb-2">
+              Backend Connection Error
+            </h3>
+            <p className="text-sm text-stone-600 mb-4">{connectionError}</p>
+            <p className="text-xs text-stone-500 mb-6">
+              Please ensure the backend server is running and accessible. Check
+              your environment configuration and try refreshing.
+            </p>
+            <button
+              onClick={handleRefresh}
+              className="inline-flex items-center px-4 py-2 text-sm font-medium text-white bg-stone-600 hover:bg-stone-700 rounded-md transition-colors"
+            >
+              <svg
+                className="w-4 h-4 mr-2"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
+                />
+              </svg>
+              Retry Connection
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Empty State Overlay */}
-      {hasData === false && (
+      {hasData === false && !connectionError && (
         <div className="absolute inset-0 flex items-center justify-center bg-stone-50/95 z-10">
           <div className="text-center max-w-md px-6">
             <div className="mb-4 flex justify-center">
