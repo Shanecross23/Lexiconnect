@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 
 interface DatabaseStats {
   text_count: number;
@@ -19,11 +19,7 @@ export default function DatabaseStatistics() {
   const [error, setError] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
 
-  useEffect(() => {
-    fetchStats();
-  }, []);
-
-  const fetchStats = async (isRefresh = false) => {
+  const fetchStats = useCallback(async (isRefresh = false) => {
     if (isRefresh) {
       setIsRefreshing(true);
     } else {
@@ -47,7 +43,22 @@ export default function DatabaseStatistics() {
       setIsLoading(false);
       setIsRefreshing(false);
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    fetchStats();
+
+    // Listen for database wipe events to refresh stats
+    const handleDatabaseWiped = () => {
+      fetchStats(true);
+    };
+
+    window.addEventListener("databaseWiped", handleDatabaseWiped);
+
+    return () => {
+      window.removeEventListener("databaseWiped", handleDatabaseWiped);
+    };
+  }, [fetchStats]);
 
   if (isLoading) {
     return (

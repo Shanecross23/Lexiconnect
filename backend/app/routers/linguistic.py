@@ -639,7 +639,7 @@ async def concordance_search(
             # First, find all matching morphemes and their words
             cypher_query = """
             MATCH (m:Morpheme)
-            WHERE (m.surface_form CONTAINS $target OR m.citation_form CONTAINS $target)
+            WHERE (m.surface_form CONTAINS $target OR m.citation_form CONTAINS $target OR m.gloss CONTAINS $target)
             AND ($language IS NULL OR m.language = $language)
             MATCH (w:Word)-[:WORD_MADE_OF]->(m)
             MATCH (ph:Phrase)-[r:PHRASE_COMPOSED_OF]->(w)
